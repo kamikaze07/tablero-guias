@@ -21,7 +21,7 @@ final class GuiaBoardRepository
     public function findToday(): array
     {
         $stmt = $this->connection->prepare(
-            'SELECT id, num_guia, fecha, nombre, tipo, servicio, placas1, estado, operador
+            'SELECT id, source, num_guia, fecha, nombre, tipo, servicio, placas1, estado, operador
              FROM guias
              WHERE fecha >= :today
              ORDER BY id DESC'

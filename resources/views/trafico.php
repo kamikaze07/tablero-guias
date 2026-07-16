@@ -30,6 +30,9 @@
         <span id="engine-status" class="status-pill status-pill--pending">
             <i class="bi bi-cpu"></i> Motor: verificando…
         </span>
+        <span class="status-pill status-pill--disabled" title="CFDI Watcher aún no implementado">
+            <i class="bi bi-file-earmark-check"></i> CFDI Watcher: Próximamente
+        </span>
     </div>
 </header>
 
@@ -106,6 +109,19 @@
             <div class="board-column__cards"></div>
         </div>
     </section>
+
+    <aside class="activity-panel">
+        <header class="activity-panel__header">
+            <span class="activity-panel__title"><i class="bi bi-activity"></i> Actividad Reciente</span>
+        </header>
+        <div id="activity-log" class="activity-panel__body">
+            <div class="activity-panel__empty">
+                <i class="bi bi-clock-history"></i>
+                <p>Sin actividad todavía</p>
+            </div>
+            <div class="activity-panel__entries"></div>
+        </div>
+    </aside>
 </main>
 
 <script id="initial-guias" type="application/json"><?= json_encode($guiasGeneradas, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?></script>
