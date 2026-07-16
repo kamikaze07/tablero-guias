@@ -1,3 +1,5 @@
+import SoundManager from './sound-manager.js';
+
 const panels = {
     generadas: {
         cardsEl: document.querySelector('#panel-generadas .board-column__cards'),
@@ -149,7 +151,7 @@ function addNewGuia(guia) {
     panels.generadas.cardsEl.prepend(card);
     updateCounts();
 
-    soundBoard.play('new-guide');
+    soundManager.playNewGuide();
     addActivityEntry({ type: 'new_guide', prNumber: guia.num_guia });
 }
 
@@ -176,56 +178,6 @@ function addActivityEntry({ type, prNumber }) {
     }
 
     activityLogEl.classList.remove('is-empty');
-}
-
-function createSoundBoard() {
-    const keys = ['new-guide', 'release-request', 'success', 'error'];
-    const sounds = new Map();
-
-    keys.forEach((key) => {
-        const audio = document.createElement('audio');
-        audio.preload = 'none';
-
-        [
-            { ext: 'ogg', type: 'audio/ogg' },
-            { ext: 'wav', type: 'audio/wav' },
-        ].forEach(({ ext, type }) => {
-            const source = document.createElement('source');
-            source.src = `/assets/sounds/${key}.${ext}`;
-            source.type = type;
-            audio.appendChild(source);
-        });
-
-        // Si el archivo todavía no existe, el elemento simplemente no
-        // reproduce nada — nunca debe generar un error de JavaScript.
-        audio.addEventListener('error', () => {}, true);
-
-        sounds.set(key, audio);
-    });
-
-    // Los navegadores bloquean el autoplay hasta la primera interacción
-    // del usuario con la página.
-    let unlocked = false;
-    const unlock = () => { unlocked = true; };
-    document.addEventListener('click', unlock, { once: true });
-    document.addEventListener('keydown', unlock, { once: true });
-
-    return {
-        play(key) {
-            if (!unlocked) {
-                return;
-            }
-
-            const audio = sounds.get(key);
-
-            if (!audio) {
-                return;
-            }
-
-            audio.currentTime = 0;
-            audio.play().catch(() => {});
-        },
-    };
 }
 
 function handleMessage(event) {
@@ -298,7 +250,7 @@ function tickClock() {
     document.getElementById('clock-time').textContent = now.toLocaleTimeString('es-MX', { hour12: false });
 }
 
-const soundBoard = createSoundBoard();
+const soundManager = new SoundManager();
 
 activityLogEl.classList.add('is-empty');
 
