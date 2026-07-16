@@ -16,11 +16,11 @@ final class GuiaRepository
     }
 
     /**
-     * Inserta la guía en ATLAS. Devuelve false sin lanzar error si el
-     * registro ya existía (misma fuente + mismo num de origen), como
-     * salvaguarda de duplicados independiente del checkpoint.
+     * Inserta la guía en ATLAS y devuelve su id. Devuelve null sin lanzar
+     * error si el registro ya existía (misma fuente + mismo num de origen),
+     * como salvaguarda de duplicados independiente del checkpoint.
      */
-    public function insert(GuiaRecord $record): bool
+    public function insert(GuiaRecord $record): ?int
     {
         $stmt = $this->connection->prepare(
             'INSERT INTO guias (
@@ -82,12 +82,12 @@ final class GuiaRepository
             ]);
         } catch (PDOException $e) {
             if ((int) $e->errorInfo[1] === self::DUPLICATE_ENTRY_ERROR_CODE) {
-                return false;
+                return null;
             }
 
             throw $e;
         }
 
-        return true;
+        return (int) $this->connection->lastInsertId();
     }
 }

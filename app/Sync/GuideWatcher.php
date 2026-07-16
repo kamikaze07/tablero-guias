@@ -23,6 +23,7 @@ final class GuideWatcher implements Watcher
         private readonly SourceRegistry $sourceRegistry,
         private readonly CheckpointStore $checkpointStore,
         private readonly GuiaRepository $guiaRepository,
+        private readonly EventPublisher $eventPublisher,
         private readonly SyncLogger $logger,
     ) {
     }
@@ -49,15 +50,16 @@ final class GuideWatcher implements Watcher
 
             foreach ($rows as $row) {
                 $record = GuiaRecord::fromSourceRow($source->name(), $row);
-                $inserted = $this->guiaRepository->insert($record);
+                $atlasId = $this->guiaRepository->insert($record);
 
                 // El checkpoint solo avanza tras confirmar la inserción
                 // (o confirmar que el registro ya existía en ATLAS).
                 $checkpoint = $record->sourceNum;
                 $this->checkpointStore->update($source->name(), $checkpoint);
 
-                if ($inserted) {
+                if ($atlasId !== null) {
                     $synced++;
+                    $this->publishDetected($atlasId, $record);
                 }
             }
 
@@ -71,6 +73,21 @@ final class GuideWatcher implements Watcher
         } while (count($rows) === self::BATCH_SIZE);
 
         return $synced;
+    }
+
+    private function publishDetected(int $atlasId, GuiaRecord $record): void
+    {
+        $this->eventPublisher->publish('guia.detectada', [
+            'id' => $atlasId,
+            'source' => $record->source,
+            'num_guia' => $record->numGuia,
+            'fecha' => $record->fecha->format('Y-m-d H:i:s'),
+            'nombre' => $record->nombre,
+            'tipo' => $record->tipo,
+            'servicio' => $record->servicio,
+            'placas1' => $record->placas1,
+            'estado' => $record->estado,
+        ]);
     }
 
     /** @return array<int, array<string, mixed>> */

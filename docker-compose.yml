@@ -35,5 +35,36 @@ services:
     volumes:
       - atlas-db-data:/var/lib/mysql
 
+  websocket:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    container_name: atlas-websocket
+    command: php bin/websocket-server.php
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
+    env_file:
+      - .env
+    ports:
+      - "${WEBSOCKET_PORT:-8098}:${WEBSOCKET_PORT:-8098}"
+    depends_on:
+      - db
+
+  sync-engine:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    container_name: atlas-sync-engine
+    command: php bin/sync-engine.php
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - websocket
+
 volumes:
   atlas-db-data:

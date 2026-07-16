@@ -10,6 +10,7 @@ use App\Sync\CheckpointStore;
 use App\Sync\GuiaRepository;
 use App\Sync\GuideWatcher;
 use App\Sync\HeartbeatStore;
+use App\Sync\SocketEventPublisher;
 use App\Sync\SourceRegistry;
 use App\Sync\SyncLogger;
 use App\Sync\SynchronizationEngine;
@@ -33,10 +34,17 @@ $sourceRegistry = new SourceRegistry(
 
 $logger = new SyncLogger(__DIR__ . '/../storage/logs/sync-engine.log');
 
+$eventPublisher = new SocketEventPublisher(
+    $config->get('WEBSOCKET_INTERNAL_HOST', 'websocket'),
+    (int) $config->get('WEBSOCKET_PUBLISH_PORT', '8099'),
+    $logger,
+);
+
 $guideWatcher = new GuideWatcher(
     $sourceRegistry,
     new CheckpointStore($atlasConnection),
     new GuiaRepository($atlasConnection),
+    $eventPublisher,
     $logger,
 );
 
