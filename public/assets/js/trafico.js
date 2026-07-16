@@ -56,10 +56,10 @@ function logoForSource(source) {
     const value = String(source ?? '').toLowerCase();
 
     if (value.includes('gero')) {
-        return { src: '/assets/gero-logo.svg', alt: 'GERO' };
+        return { src: '/assets/gero-logo.svg', alt: 'GERO', modifier: 'gero' };
     }
 
-    return { src: '/assets/forsis-logo.svg', alt: 'FORSIS' };
+    return { src: '/assets/forsis-logo.svg', alt: 'FORSIS', modifier: 'forsis' };
 }
 
 function setTextWithBump(el, value) {
@@ -88,7 +88,8 @@ function buildCard(guia, accent) {
         : '';
 
     card.innerHTML = `
-        <span class="guia-card__logo"><img src="${logo.src}" alt="${logo.alt}" loading="lazy"></span>
+        <img class="guia-card__logo guia-card__logo--${logo.modifier}" src="${logo.src}" alt="${logo.alt}" loading="lazy">
+
         <div class="guia-card__pr">${escapeHtml(guia.num_guia)}</div>
         <div class="guia-card__servicio">${escapeHtml(guia.servicio)}</div>
         <div class="guia-card__cliente" title="${clienteText}">${clienteText}</div>
