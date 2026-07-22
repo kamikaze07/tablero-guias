@@ -74,3 +74,144 @@ CREATE TABLE IF NOT EXISTS sync_heartbeat (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (engine_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Solicitudes de Liberación: módulo receptor de trafico-system.
+-- Diseño completo en knowledge/modules/solicitudes-liberacion/. Sin
+-- FOREIGN KEY físicas, igual convención que las tablas anteriores — las
+-- relaciones se validan en código, no en el motor de base de datos.
+
+-- Estado operativo del tablero por guía (Generada / Solicitada a
+-- Liberación / [futuro] resultado de timbrado), distinto del campo crudo
+-- `guias.estado` replicado de SICRET. Creación perezosa: una guía sin fila
+-- aquí se interpreta como GENERADA (su estado por defecto), la fila solo
+-- se materializa en su primera transición.
+CREATE TABLE IF NOT EXISTS guia_estado_tablero (
+    guia_id BIGINT UNSIGNED NOT NULL,
+    estado VARCHAR(30) NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (guia_id),
+    KEY idx_guia_estado_tablero_estado (estado)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Cabecera de una Solicitud de Liberación: una fila por cada lote de
+-- guías que un sistema origen (hoy únicamente trafico-system) pide
+-- liberar. `estado` solo alcanza PENDIENTE en este sprint; EN_REVISION/
+-- APROBADA/RECHAZADA quedan reservados para el futuro módulo de
+-- Facturación.
+-- `estado` transita PENDIENTE -> APROBADA -> EJECUTANDO -> COMPLETADA,
+-- o PENDIENTE -> RECHAZADA (terminal), o EJECUTANDO -> ERROR (terminal).
+-- APROBADA/RECHAZADA los escribirá el futuro Panel de Trabajo de
+-- Facturación (fuera de alcance de este sprint); EJECUTANDO/COMPLETADA/
+-- ERROR los escriben App\Liberacion\Execution\LiberacionExecutor y
+-- App\Monitoring\Liberacion\LiberationConfirmationWatcher. Ver
+-- App\Liberacion\GuiaEstadoTableroRepository para el estado espejo a
+-- nivel de guía individual.
+CREATE TABLE IF NOT EXISTS solicitud_liberacion (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    origen VARCHAR(50) NOT NULL,
+    motivo TEXT NOT NULL,
+    estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+    resolved_at DATETIME NULL,
+    resolved_by VARCHAR(50) NULL,
+    executed_at DATETIME NULL,
+    confirmed_at DATETIME NULL,
+    error_reason TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_solicitud_liberacion_estado (estado),
+    KEY idx_solicitud_liberacion_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Guías que pertenecen a cada Solicitud de Liberación (relación N a N
+-- materializada). `num_guia` se duplica únicamente por legibilidad en
+-- consultas manuales; la fuente de verdad sigue siendo `guias` vía
+-- guia_id.
+CREATE TABLE IF NOT EXISTS solicitud_liberacion_detalle (
+    solicitud_id BIGINT UNSIGNED NOT NULL,
+    guia_id BIGINT UNSIGNED NOT NULL,
+    num_guia VARCHAR(15) NOT NULL,
+    PRIMARY KEY (solicitud_id, guia_id),
+    KEY idx_solicitud_liberacion_detalle_guia (guia_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Bitácora append-only de eventos sobre una Solicitud de Liberación
+-- (auditoría). Ninguna fila ya escrita se actualiza ni se borra.
+CREATE TABLE IF NOT EXISTS solicitud_liberacion_historial (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    solicitud_id BIGINT UNSIGNED NOT NULL,
+    evento VARCHAR(30) NOT NULL,
+    estado_anterior VARCHAR(20) NULL,
+    estado_nuevo VARCHAR(20) NOT NULL,
+    actor VARCHAR(50) NULL,
+    detalle TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_solicitud_liberacion_historial_solicitud (solicitud_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Bitácora append-only de toda escritura que ATLAS realiza hacia SICRET,
+-- sin importar qué proceso de negocio la origina (Liberación, y en el
+-- futuro Timbrado/Cancelaciones/etc.). Único punto de auditoría de
+-- App\Infrastructure\Sicret\SicretGateway — cada intento de escritura se
+-- registra aquí, tanto si tuvo éxito como si falló o fue rechazado por no
+-- estar su semántica todavía confirmada.
+CREATE TABLE IF NOT EXISTS sicret_write_log (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    operacion VARCHAR(50) NOT NULL,
+    source VARCHAR(20) NOT NULL,
+    num_guia VARCHAR(15) NOT NULL,
+    -- VARCHAR(30), no 20: 'rechazado_no_configurado' (24) ya no cabía en
+    -- 20 y el INSERT fallaba en silencio (el propio intento de auditar un
+    -- rechazo quedaba sin registrar). Encontrado al validar de punta a
+    -- punta el flujo Aceptar -> LiberacionExecutor -> SicretGateway en el
+    -- sprint "Tablero de Facturación".
+    resultado VARCHAR(30) NOT NULL,
+    detalle TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_sicret_write_log_num_guia (num_guia),
+    KEY idx_sicret_write_log_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Cabecera de una Solicitud de Timbrado: una fila por cada lote de guías
+-- que trafico-system pide timbrar. Proceso independiente de Liberación
+-- (ver App\Timbrado\SolicitudTimbradoService) — no comparte
+-- guia_estado_tablero porque no mueve ninguna máquina de estados de la
+-- guía, solo registra la intención para que Facturación la atienda.
+-- `estado` solo alcanza PENDIENTE en este sprint, igual que
+-- solicitud_liberacion en su primer sprint.
+CREATE TABLE IF NOT EXISTS solicitud_timbrado (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    origen VARCHAR(50) NOT NULL,
+    solicitante VARCHAR(100) NULL,
+    estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_solicitud_timbrado_estado (estado),
+    KEY idx_solicitud_timbrado_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Guías que pertenecen a cada Solicitud de Timbrado (relación N a N
+-- materializada) — mismo diseño que solicitud_liberacion_detalle.
+CREATE TABLE IF NOT EXISTS solicitud_timbrado_detalle (
+    solicitud_id BIGINT UNSIGNED NOT NULL,
+    guia_id BIGINT UNSIGNED NOT NULL,
+    num_guia VARCHAR(15) NOT NULL,
+    PRIMARY KEY (solicitud_id, guia_id),
+    KEY idx_solicitud_timbrado_detalle_guia (guia_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Bitácora append-only de eventos sobre una Solicitud de Timbrado
+-- (auditoría). Sin columnas de estado_anterior/estado_nuevo: a diferencia
+-- de solicitud_liberacion_historial, este sprint de Timbrado no tiene
+-- transiciones de estado que registrar, solo el evento CREADA.
+CREATE TABLE IF NOT EXISTS solicitud_timbrado_historial (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    solicitud_id BIGINT UNSIGNED NOT NULL,
+    evento VARCHAR(30) NOT NULL,
+    actor VARCHAR(50) NULL,
+    detalle TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_solicitud_timbrado_historial_solicitud (solicitud_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

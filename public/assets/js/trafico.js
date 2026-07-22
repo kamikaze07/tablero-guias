@@ -11,6 +11,11 @@ const panels = {
         bodyEl: document.getElementById('panel-liberacion'),
         countEl: document.getElementById('count-liberacion'),
     },
+    solicitudes_timbrado: {
+        cardsEl: document.querySelector('#panel-solicitudes-timbrado .board-column__cards'),
+        bodyEl: document.getElementById('panel-solicitudes-timbrado'),
+        countEl: document.getElementById('count-solicitudes-timbrado'),
+    },
     timbrado: {
         cardsEl: document.querySelector('#panel-timbrado .board-column__cards'),
         bodyEl: document.getElementById('panel-timbrado'),
@@ -28,10 +33,19 @@ const NEW_CARD_HIGHLIGHT_MS = 5000;
 const ACTIVITY_LOG_LIMIT = 20;
 
 const ACTIVITY_TYPES = {
-    new_guide: { icon: 'bi-file-earmark-plus-fill', label: 'Nueva guía' },
-    release_request: { icon: 'bi-send-fill', label: 'Liberación solicitada' },
-    success: { icon: 'bi-check-circle-fill', label: 'Timbrada' },
-    error: { icon: 'bi-exclamation-triangle-fill', label: 'Error de timbrado' },
+    'guia.detectada': { icon: 'bi-file-earmark-plus-fill', label: 'Nueva guía' },
+    'guia.actualizada': { icon: 'bi-pencil-fill', label: 'Guía editada' },
+    'guia.timbrado_solicitado': { icon: 'bi-envelope-paper-fill', label: 'Solicitud de Timbrado' },
+    'solicitud_timbrado.aprobada': { icon: 'bi-check-circle-fill text-success', label: 'Timbrado aprobado' },
+    'solicitud_timbrado.rechazada': { icon: 'bi-x-circle-fill text-danger', label: 'Timbrado rechazado' },
+    'guia.timbrado_completado': { icon: 'bi-receipt', label: 'Guía timbrada' },
+    'guia.timbrado_error': { icon: 'bi-exclamation-triangle-fill text-danger', label: 'Error de timbrado' },
+    'guia.liberacion_solicitada': { icon: 'bi-send-fill', label: 'Solicitud de Liberación' },
+    'solicitud_liberacion.aprobada': { icon: 'bi-check-circle-fill text-success', label: 'Liberación aprobada' },
+    'solicitud_liberacion.rechazada': { icon: 'bi-x-circle-fill text-danger', label: 'Liberación rechazada' },
+    'guia.liberacion_ejecutando': { icon: 'bi-gear-fill', label: 'Inicio de ejecución en SICRET' },
+    'guia.liberacion_completada': { icon: 'bi-check-all text-success', label: 'Liberación completada' },
+    'guia.liberacion_error': { icon: 'bi-exclamation-triangle-fill text-danger', label: 'Error durante la liberación' },
 };
 
 function escapeHtml(value) {
@@ -131,6 +145,26 @@ function renderInitialGuias(guias) {
     updateCounts();
 }
 
+function renderInitialBucket(guias, targetPanel, stateClass) {
+    guias.forEach((guia) => {
+        const card = buildCard(guia, stateClass);
+
+        if (guia.resolucion) {
+            updateCardResult(card, {
+                tipo: guia.resolucion.tipo,
+                resultado: guia.resolucion.resultado,
+                fecha: guia.resolucion.fecha,
+                usuario: guia.resolucion.usuario,
+                observaciones: guia.resolucion.observaciones,
+                color: guia.resolucion.color,
+            });
+        }
+
+        targetPanel.cardsEl.appendChild(card);
+    });
+    updateCounts();
+}
+
 function addNewGuia(guia) {
     const card = buildCard(guia, 'generada');
     card.classList.add('guia-card--enter', 'guia-card--new');
@@ -152,7 +186,6 @@ function addNewGuia(guia) {
     updateCounts();
 
     soundManager.playNewGuide();
-    addActivityEntry({ type: 'new_guide', prNumber: guia.num_guia });
 }
 
 function addActivityEntry({ type, prNumber }) {
@@ -180,11 +213,107 @@ function addActivityEntry({ type, prNumber }) {
     activityLogEl.classList.remove('is-empty');
 }
 
+function moveCards(guias, targetPanel, stateClass) {
+    guias.forEach((guiaInfo) => {
+        const id = guiaInfo.id || guiaInfo.guia_id;
+        const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+        
+        if (card) {
+            // Update styling classes
+            card.classList.remove('guia-card--generada', 'guia-card--liberacion', 'guia-card--timbrado');
+            card.classList.add(`guia-card--${stateClass}`);
+            
+            // Move to new panel
+            targetPanel.cardsEl.prepend(card);
+        }
+    });
+    updateCounts();
+}
+
+function updateCardResult(card, { tipo, resultado, fecha, usuario, observaciones, color }) {
+    let resolution = card.querySelector('.guia-card__resolution');
+    if (!resolution) {
+        resolution = document.createElement('div');
+        resolution.className = 'guia-card__resolution mt-2 pt-2 border-top small';
+        card.appendChild(resolution);
+    }
+    const icon = color === 'success' ? '🟢' : '🔴';
+    resolution.innerHTML = `
+        <div class="fw-bold text-${color}">${icon} ${escapeHtml(tipo)} ${escapeHtml(resultado)}</div>
+        <div><strong>Usuario:</strong> ${escapeHtml(usuario)}</div>
+        <div><strong>Fecha:</strong> ${formatFecha(fecha)}</div>
+        ${observaciones ? `<div><strong>Obs:</strong> ${escapeHtml(observaciones)}</div>` : ''}
+    `;
+}
+
 function handleMessage(event) {
     const message = JSON.parse(event.data);
+    const evName = message.event;
 
-    if (message.event === 'guia.detectada') {
+    // Log the domain event if we track it
+    if (ACTIVITY_TYPES[evName]) {
+        if (message.payload.guias && message.payload.guias.length > 0) {
+            message.payload.guias.forEach(g => {
+                addActivityEntry({ type: evName, prNumber: g.num_guia });
+            });
+        } else if (message.payload.num_guia) {
+            addActivityEntry({ type: evName, prNumber: message.payload.num_guia });
+        }
+    }
+
+    if (evName === 'guia.detectada') {
         addNewGuia(message.payload);
+    } else if (evName === 'guia.timbrado_solicitado') {
+        moveCards(message.payload.guias, panels.solicitudes_timbrado, 'liberacion'); // Use 'liberacion' as warning-color for pending
+    } else if (evName === 'guia.liberacion_solicitada') {
+        moveCards(message.payload.guias, panels.liberacion, 'liberacion');
+    } else if (
+        evName === 'solicitud_timbrado.aprobada' || 
+        evName === 'solicitud_timbrado.rechazada' || 
+        evName === 'solicitud_liberacion.aprobada' || 
+        evName === 'solicitud_liberacion.rechazada'
+    ) {
+        const isAprobada = evName.includes('.aprobada');
+        const isTimbrado = evName.includes('timbrado');
+        const tipo = isTimbrado ? 'Timbrado' : 'Liberación';
+        const resultado = isAprobada ? 'Aprobada' : 'Rechazada';
+        const color = isAprobada ? 'success' : 'danger';
+        
+        moveCards(message.payload.guias, panels.timbrado, 'timbrado');
+        
+        message.payload.guias.forEach((g) => {
+            const id = g.id || g.guia_id;
+            const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+            if (card) {
+                updateCardResult(card, {
+                    tipo,
+                    resultado,
+                    fecha: message.payload.fecha || new Date().toISOString(),
+                    usuario: message.payload.actor || 'Facturación',
+                    observaciones: message.payload.motivo || '',
+                    color
+                });
+            }
+        });
+    } else if (evName === 'guia.timbrado_completado') {
+        // Puente temporal con el timbrado manual de SICRET (ver
+        // App\Monitoring\Timbrado\TimbradoConfirmationWatcher) — la tarjeta
+        // ya está en "Resultado del Timbrado" desde que se aprobó; aquí solo
+        // se actualiza su resolución con la confirmación real de SICRET.
+        message.payload.guias.forEach((g) => {
+            const id = g.id || g.guia_id;
+            const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+            if (card) {
+                updateCardResult(card, {
+                    tipo: 'Timbrado',
+                    resultado: 'Confirmado en SICRET',
+                    fecha: new Date().toISOString(),
+                    usuario: 'SICRET',
+                    observaciones: g.factura_impresa ? `Factura: ${g.factura_impresa}` : '',
+                    color: 'success',
+                });
+            }
+        });
     }
 }
 
@@ -256,6 +385,15 @@ activityLogEl.classList.add('is-empty');
 
 const initialGuias = JSON.parse(document.getElementById('initial-guias').textContent || '[]');
 renderInitialGuias(initialGuias);
+
+const initialSolicitudesTimbrado = JSON.parse(document.getElementById('initial-solicitudes-timbrado').textContent || '[]');
+renderInitialBucket(initialSolicitudesTimbrado, panels.solicitudes_timbrado, 'liberacion');
+
+const initialLiberacion = JSON.parse(document.getElementById('initial-liberacion').textContent || '[]');
+renderInitialBucket(initialLiberacion, panels.liberacion, 'liberacion');
+
+const initialTimbrado = JSON.parse(document.getElementById('initial-timbrado').textContent || '[]');
+renderInitialBucket(initialTimbrado, panels.timbrado, 'timbrado');
 
 tickClock();
 setInterval(tickClock, 1000);

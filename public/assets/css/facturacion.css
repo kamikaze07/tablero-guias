@@ -1,0 +1,131 @@
+/* Extiende trafico.css (variables, header, status-pill, kpi-card,
+   activity-panel se reutilizan tal cual) — este archivo solo agrega lo
+   propio del tablero de Facturación: navegación cruzada, barra de
+   filtros, tablas y prioridad visual. */
+
+:root {
+    --c-pendiente: #f0b429;
+    --c-tiempo: #a78bfa;
+}
+
+.kpi-bar--facturacion {
+    grid-template-columns: repeat(5, 1fr);
+}
+
+.kpi-card--pendiente { border-left-color: var(--c-pendiente); }
+.kpi-card--pendiente .kpi-card__icon { color: var(--c-pendiente); }
+.kpi-card--tiempo { border-left-color: var(--c-tiempo); }
+.kpi-card--tiempo .kpi-card__icon { color: var(--c-tiempo); }
+
+/* Filtros */
+
+.filters-bar {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    padding: 0 1.5rem .75rem;
+}
+
+.filters-bar .form-control,
+.filters-bar .form-select {
+    background: var(--panel-bg);
+    border-color: var(--border);
+    color: var(--text);
+    width: auto;
+    flex: 0 1 auto;
+}
+
+.filters-bar .form-control::placeholder {
+    color: var(--text-muted);
+}
+
+.filters-bar .form-control:focus,
+.filters-bar .form-select:focus {
+    background: var(--panel-bg);
+    color: var(--text);
+    border-color: var(--c-generada);
+    box-shadow: 0 0 0 .2rem rgba(47, 129, 247, .25);
+}
+
+/* Board de Facturación: dos columnas de tabla + actividad */
+
+.board--facturacion {
+    grid-template-columns: 2fr 1.4fr 300px;
+}
+
+.board-column__body--table {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.board-column__body--table table {
+    margin-bottom: 0;
+}
+
+.board-column__body--table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--panel-header-bg);
+    color: var(--text-muted);
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    border-bottom: 1px solid var(--border);
+    z-index: 1;
+}
+
+.board-column__body--table td {
+    border-color: var(--border);
+    font-size: .85rem;
+    vertical-align: middle;
+}
+
+.board-column__note {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: flex-start;
+    gap: .5rem;
+    padding: .5rem 1rem;
+    font-size: .78rem;
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, .03);
+    border-bottom: 1px solid var(--border);
+}
+
+.board-column__note code {
+    color: var(--c-liberacion);
+}
+
+.motivo-col {
+    max-width: 220px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.acciones-col {
+    display: flex;
+    gap: .35rem;
+    white-space: nowrap;
+}
+
+/* Prioridad visual por tiempo de espera */
+
+tr.espera-atencion {
+    box-shadow: inset 3px 0 0 var(--c-liberacion);
+}
+
+tr.espera-critica {
+    box-shadow: inset 3px 0 0 var(--c-error);
+    background: rgba(239, 68, 68, .06);
+}
+
+/* trafico.css oculta .board-column__empty por defecto y solo la muestra
+   vía .board-column__body.is-empty (un ancestro distinto al propio
+   elemento) — aquí el estado vacío se controla directamente sobre el
+   elemento, así que se necesita su propio modificador. */
+.board-column__empty.is-visible {
+    display: flex !important;
+}

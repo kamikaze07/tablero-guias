@@ -16,6 +16,9 @@
             <span class="ops-header__title">ATLAS</span>
             <span class="ops-header__subtitle">Dashboard de Tráfico</span>
         </div>
+        <nav class="ops-header__nav">
+            <a href="/facturacion.php"><i class="bi bi-receipt-cutoff"></i> Tablero de Facturación</a>
+        </nav>
     </div>
 
     <div class="ops-header__clock">
@@ -82,6 +85,20 @@
         </div>
     </section>
 
+    <section class="board-column board-column--solicitudes-timbrado">
+        <header class="board-column__header">
+            <span class="board-column__title"><i class="bi bi-file-earmark-check-fill"></i> Solicitudes de Timbrado</span>
+            <span id="count-solicitudes-timbrado" class="board-column__count">0</span>
+        </header>
+        <div id="panel-solicitudes-timbrado" class="board-column__body">
+            <div class="board-column__empty">
+                <i class="bi bi-inbox"></i>
+                <p>Sin guías en este momento</p>
+            </div>
+            <div class="board-column__cards"></div>
+        </div>
+    </section>
+
     <section class="board-column board-column--liberacion">
         <header class="board-column__header">
             <span class="board-column__title"><i class="bi bi-send-fill"></i> Solicitadas a Liberación</span>
@@ -124,7 +141,10 @@
     </aside>
 </main>
 
-<script id="initial-guias" type="application/json"><?= json_encode($guiasGeneradas, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?></script>
+<script id="initial-guias" type="application/json"><?= json_encode($boardState['generadas'], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?></script>
+<script id="initial-solicitudes-timbrado" type="application/json"><?= json_encode($boardState['solicitudes_timbrado'], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?></script>
+<script id="initial-liberacion" type="application/json"><?= json_encode($boardState['liberacion'], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?></script>
+<script id="initial-timbrado" type="application/json"><?= json_encode($boardState['timbrado'], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?></script>
 <script>
     const WS_PORT = <?= $websocketPort ?>;
 </script>

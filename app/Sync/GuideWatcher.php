@@ -5,11 +5,19 @@ declare(strict_types=1);
 namespace App\Sync;
 
 use PDO;
+use PDOException;
+use App\Notifications\Dispatcher\NotificationDispatcher;
+use App\Domain\Events\GuideCreated;
 
 final class GuideWatcher implements Watcher
 {
     private const TABLE = 'guias';
     private const BATCH_SIZE = 500;
+
+    // Códigos de error de MySQL/MariaDB que indican una conexión muerta
+    // (no un problema con la consulta en sí): 2006 = server has gone
+    // away, 2013 = lost connection during query.
+    private const CONNECTION_LOST_ERROR_CODES = [2006, 2013];
 
     private const COLUMNS = <<<'SQL'
         num, num_guia, folio_imp, fecha, fecha_c, fecha_d, num_llama, estado,
@@ -25,6 +33,7 @@ final class GuideWatcher implements Watcher
         private readonly GuiaRepository $guiaRepository,
         private readonly EventPublisher $eventPublisher,
         private readonly SyncLogger $logger,
+        private readonly ?NotificationDispatcher $dispatcher = null,
     ) {
     }
 
@@ -88,10 +97,45 @@ final class GuideWatcher implements Watcher
             'placas1' => $record->placas1,
             'estado' => $record->estado,
         ]);
+
+        if ($this->dispatcher) {
+            $this->dispatcher->dispatch(new GuideCreated($record->numGuia, [
+                'id' => $atlasId,
+                'source' => $record->source,
+                'fecha' => $record->fecha->format('Y-m-d H:i:s'),
+                'estado' => $record->estado,
+            ]));
+        }
     }
 
     /** @return array<int, array<string, mixed>> */
     private function fetchBatch(Source $source, int $checkpoint, bool $isFirstRun): array
+    {
+        try {
+            return $this->runFetchBatch($source, $checkpoint, $isFirstRun);
+        } catch (PDOException $e) {
+            if (!$this->isConnectionLost($e)) {
+                throw $e;
+            }
+
+            $this->logger->error('Conexión perdida con la fuente, reconectando', [
+                'source' => $source->name(),
+                'error' => $e->getMessage(),
+            ]);
+
+            $source->reconnect();
+
+            return $this->runFetchBatch($source, $checkpoint, $isFirstRun);
+        }
+    }
+
+    private function isConnectionLost(PDOException $e): bool
+    {
+        return in_array((int) ($e->errorInfo[1] ?? 0), self::CONNECTION_LOST_ERROR_CODES, true);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function runFetchBatch(Source $source, int $checkpoint, bool $isFirstRun): array
     {
         $sql = 'SELECT ' . self::COLUMNS . ' FROM ' . self::TABLE . ' WHERE num > :checkpoint';
 

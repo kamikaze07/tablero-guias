@@ -18,10 +18,9 @@ Este proyecto únicamente consume información de SICRET.
 
 ## Restricciones
 
-- Nunca modificar la base de datos de SICRET.
-- SICRET es únicamente de lectura.
+- SICRET es de lectura para todo ATLAS, con una única excepción autorizada: `App\Infrastructure\Sicret\SicretGateway` — el único componente de todo el proyecto con permiso de escritura hacia SICRET, y solo para replicar operaciones de negocio ya aprobadas por Facturación (p. ej. liberar una guía). Ningún otro módulo escribe en SICRET directa ni indirectamente.
 - SICRET no genera eventos.
-- Toda detección de cambios deberá realizarse mediante monitoreo de la base de datos y del sistema de archivos.
+- Toda detección de cambios (guías nuevas) y toda confirmación de operaciones ya ejecutadas (liberaciones, timbrados, etc.) deberá realizarse mediante monitoreo de la base de datos y del sistema de archivos — nunca asumiendo que una operación concluyó solo porque se solicitó.
 
 ---
 

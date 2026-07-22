@@ -18,7 +18,7 @@ $connection = (new ConnectionFactory())->make([
     'password' => $config->get('ATLAS_DB_PASSWORD'),
 ]);
 
-$guiasGeneradas = (new GuiaBoardRepository($connection))->findToday();
+$boardState = (new GuiaBoardRepository($connection))->boardState();
 $websocketPort = (int) $config->get('WEBSOCKET_PORT', '8098');
 
 require __DIR__ . '/../resources/views/trafico.php';

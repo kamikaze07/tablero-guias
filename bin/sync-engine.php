@@ -14,6 +14,17 @@ use App\Sync\SocketEventPublisher;
 use App\Sync\SourceRegistry;
 use App\Sync\SyncLogger;
 use App\Sync\SynchronizationEngine;
+use App\Notifications\Dispatcher\NotificationDispatcher;
+use App\Notifications\Consumers\Mattermost\MattermostConsumer;
+use App\Notifications\Consumers\Mattermost\MattermostRouter;
+use App\Notifications\Consumers\Mattermost\MattermostClient;
+use App\Notifications\Consumers\Mattermost\Templates\GuideCreatedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\TimbradoRequestedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\LiberacionRequestedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\LiberacionApprovedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\LiberacionRejectedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\GuideStampedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\GuideStampFailedTemplate;
 
 $config = new Config();
 $connectionFactory = new ConnectionFactory();
@@ -40,12 +51,32 @@ $eventPublisher = new SocketEventPublisher(
     $logger,
 );
 
+$mattermostClient = new class implements MattermostClient {
+    public function sendMessage(string $channel, string $message): void {
+        error_log("Mattermost [{$channel}]: \n{$message}");
+    }
+};
+
+$router = new MattermostRouter();
+$mattermostConsumer = new MattermostConsumer($router, $mattermostClient);
+$mattermostConsumer->registerTemplate(new GuideCreatedTemplate());
+$mattermostConsumer->registerTemplate(new TimbradoRequestedTemplate());
+$mattermostConsumer->registerTemplate(new LiberacionRequestedTemplate());
+$mattermostConsumer->registerTemplate(new LiberacionApprovedTemplate());
+$mattermostConsumer->registerTemplate(new LiberacionRejectedTemplate());
+$mattermostConsumer->registerTemplate(new GuideStampedTemplate());
+$mattermostConsumer->registerTemplate(new GuideStampFailedTemplate());
+
+$dispatcher = new NotificationDispatcher();
+$dispatcher->registerConsumer($mattermostConsumer);
+
 $guideWatcher = new GuideWatcher(
     $sourceRegistry,
     new CheckpointStore($atlasConnection),
     new GuiaRepository($atlasConnection),
     $eventPublisher,
     $logger,
+    $dispatcher,
 );
 
 $pollingIntervalSeconds = (int) $config->get('SYNC_POLLING_INTERVAL_SECONDS', '2');
