@@ -1,3 +1,7 @@
+import SoundManager from './sound-manager.js';
+
+const soundManager = new SoundManager();
+
 const tablaSolicitudesEl = document.getElementById('tabla-solicitudes');
 const solicitudesEmptyEl = document.getElementById('solicitudes-empty');
 const countSolicitudesEl = document.getElementById('count-solicitudes');
@@ -6,21 +10,39 @@ const tablaSolicitudesTimbradoEl = document.getElementById('tabla-solicitudes-ti
 const solicitudesTimbradoEmptyEl = document.getElementById('solicitudes-timbrado-empty');
 const countSolicitudesTimbradoEl = document.getElementById('count-solicitudes-timbrado');
 
-const tablaPorTimbrarEl = document.getElementById('tabla-por-timbrar');
-const porTimbrarEmptyEl = document.getElementById('por-timbrar-empty');
-const countPorTimbrarEl = document.getElementById('count-por-timbrar');
-
 const wsStatusEl = document.getElementById('ws-status');
 const engineStatusEl = document.getElementById('engine-status');
 
-const activityLogEl = document.getElementById('activity-log');
-const activityEntriesEl = activityLogEl.querySelector('.activity-panel__entries');
+// Menos filas por página a propósito (antes 50): con filas más altas y
+// fuente más grande (ver facturacion.css), 50 obligaba a scroll constante
+// para ver las solicitudes activas de Timbrado/Liberación.
+const PANEL_SOLICITUDES_PER_PAGE = 15;
 
-const ACTIVITY_LOG_LIMIT = 20;
-const ACTOR_STORAGE_KEY = 'atlas.facturacion.actor';
+// Alerta de solicitudes desatendidas (letrero + sonido) — mismo umbral
+// para las dos etapas: "pendiente sin aceptar" (created_at) y "aceptada
+// sin atender" (resolved_at, mientras el estado siga en progreso). Se
+// revisa cada ALERTA_INTERVALO_MS, y mientras haya algo que alertar sonará
+// en cada tick (repetición a propósito, no solo una vez).
+const ALERTA_UMBRAL_MINUTOS = 7;
+const ALERTA_INTERVALO_MS = 10000;
+
+// Estados "aceptada pero todavía en progreso" por flujo — nunca se alerta
+// sobre algo ya resuelto (RECHAZADA/COMPLETADA/TIMBRADO), mismo criterio
+// que ya usa App\Dashboard\GuiaBoardRepository::boardState() en el backend.
+const ESTADOS_ACEPTADA_LIBERACION = ['APROBADA', 'EJECUTANDO'];
+const ESTADOS_ACEPTADA_TIMBRADO = ['ESPERANDO_TIMBRADO'];
+
+// Última respuesta cruda de cada panel de "Solicitudes" — el timer de la
+// alerta necesita re-evaluar el tiempo transcurrido cada 10s aunque no
+// haya llegado ningún evento nuevo por WebSocket, así que no puede
+// depender del DOM ya renderizado (los badges no cargan created_at/
+// resolved_at) ni esperar a refreshAll().
+let datosSolicitudesLiberacion = [];
+let datosSolicitudesTimbrado = [];
 
 const ESTADO_LABELS = {
     PENDIENTE: { label: 'Pendiente', clase: 'badge text-bg-warning' },
+    POR_TIMBRAR: { label: 'Por timbrar', clase: 'badge text-bg-primary' },
     APROBADA: { label: 'Aprobada', clase: 'badge text-bg-info' },
     RECHAZADA: { label: 'Rechazada', clase: 'badge text-bg-secondary' },
     EJECUTANDO: { label: 'Ejecutando', clase: 'badge text-bg-primary' },
@@ -28,19 +50,6 @@ const ESTADO_LABELS = {
     ERROR: { label: 'Error', clase: 'badge text-bg-danger' },
     ESPERANDO_TIMBRADO: { label: 'Esperando timbrado', clase: 'badge text-bg-primary' },
     TIMBRADO: { label: 'Timbrado', clase: 'badge text-bg-success' },
-};
-
-const ACTIVITY_TYPES = {
-    solicitada: { icon: 'bi-inbox-fill', label: 'Solicitud recibida' },
-    aprobada: { icon: 'bi-check-circle-fill', label: 'Solicitud aprobada' },
-    rechazada: { icon: 'bi-x-circle-fill', label: 'Solicitud rechazada' },
-    ejecutando: { icon: 'bi-gear-fill', label: 'Ejecutando en SICRET' },
-    completada: { icon: 'bi-receipt', label: 'Liberación confirmada' },
-    error: { icon: 'bi-exclamation-triangle-fill', label: 'Error en liberación' },
-    timbrado_solicitado: { icon: 'bi-envelope-paper-fill', label: 'Timbrado solicitado' },
-    timbrado_aprobado: { icon: 'bi-check-all', label: 'Timbrado aprobado' },
-    timbrado_rechazado: { icon: 'bi-x-square-fill', label: 'Timbrado rechazado' },
-    timbrado_completado: { icon: 'bi-receipt', label: 'Timbrado confirmado en SICRET' },
 };
 
 function escapeHtml(value) {
@@ -117,10 +126,6 @@ function setTextWithBump(el, value) {
     el.classList.add('bump');
 }
 
-function getActor() {
-    return document.getElementById('filtro-actor').value.trim() || null;
-}
-
 function getFiltros() {
     return {
         estado: document.getElementById('filtro-estado').value,
@@ -146,8 +151,48 @@ function buildQuery(params) {
     return query.toString();
 }
 
+// Celda de contenedor compartida por ambos paneles de solicitudes — no
+// toda guía trae uno (ver App\Liberacion\ContenedorLookup).
+function celdaContenedor(contenedor) {
+    return contenedor
+        ? `<strong>${escapeHtml(contenedor)}</strong>`
+        : '<span class="text-muted">—</span>';
+}
+
+// Celda de operador con el solicitante como sub-línea pequeña — antes
+// "Autorizó" tenía su propia columna ancha; el PR y el Contenedor son más
+// relevantes para decidir, así que el solicitante se compacta aquí.
+function celdaOperadorConSolicitante(operador, autorizo) {
+    const title = `${operador || '—'} (Solicitó: ${autorizo || '—'})`;
+    return `<div class="operador-col" title="${escapeHtml(title)}">`
+         + `<div class="operador-nombre">${escapeHtml(operador)}</div>`
+         + `<div class="text-muted small operador-solicito">Solicitó: ${escapeHtml(autorizo)}</div>`
+         + `</div>`;
+}
+
+// Celda de Cliente compartida por ambos paneles de solicitudes — no toda
+// guía lo resuelve (ver App\Liberacion\ClienteLookup).
+function celdaCliente(cliente) {
+    return cliente
+        ? `<span class="ruta-cliente-col" title="${escapeHtml(cliente)}">${escapeHtml(cliente)}</span>`
+        : '<span class="text-muted">—</span>';
+}
+
+// Celda de Ruta (Origen → Destino, ya con localidad incluida — ver
+// App\Timbrado\RutaLookup) compartida por ambos paneles de solicitudes.
+function celdaRuta(origen, destino) {
+    if (!origen && !destino) {
+        return '<span class="text-muted">—</span>';
+    }
+
+    const texto = `${origen || 'N/A'} → ${destino || 'N/A'}`;
+
+    return `<span class="ruta-cliente-col" title="${escapeHtml(texto)}">${escapeHtml(texto)}</span>`;
+}
+
 function renderSolicitudes(payload) {
     const filas = payload.data ?? [];
+    datosSolicitudesLiberacion = filas;
 
     tablaSolicitudesEl.innerHTML = '';
 
@@ -157,29 +202,22 @@ function renderSolicitudes(payload) {
         tr.dataset.solicitudId = fila.solicitud_id;
 
         const estadoInfo = ESTADO_LABELS[fila.estado] ?? { label: fila.estado, clase: 'badge text-bg-secondary' };
-        const esPendiente = fila.estado === 'PENDIENTE';
-
-        const accionesHtml = esPendiente
-            ? `
-                <button class="btn btn-sm btn-success btn-aprobar" data-id="${fila.solicitud_id}" data-guia="${escapeHtml(fila.num_guia)}">
-                    <i class="bi bi-check-lg"></i> Aceptar
-                </button>
-                <button class="btn btn-sm btn-outline-danger btn-rechazar" data-id="${fila.solicitud_id}" data-guia="${escapeHtml(fila.num_guia)}">
-                    <i class="bi bi-x-lg"></i> Rechazar
-                </button>
-            `
-            : (fila.error_reason ? `<span class="text-danger small" title="${escapeHtml(fila.error_reason)}"><i class="bi bi-info-circle"></i> ver error</span>` : '—');
+        const detalleHtml = fila.error_reason
+            ? `<span class="text-danger small" title="${escapeHtml(fila.error_reason)}"><i class="bi bi-info-circle"></i> ver error</span>`
+            : '—';
 
         tr.innerHTML = `
             <td><strong>${escapeHtml(fila.num_guia)}</strong><div class="text-muted small">Lote #${fila.solicitud_id}</div></td>
-            <td>${escapeHtml(fila.autorizo)}</td>
-            <td>${escapeHtml(fila.operador)}</td>
+            <td>${celdaContenedor(fila.contenedor)}</td>
+            <td>${celdaCliente(fila.cliente)}</td>
+            <td>${celdaRuta(fila.ruta_origen, fila.ruta_destino)}</td>
+            <td>${celdaOperadorConSolicitante(fila.operador, fila.autorizo)}</td>
             <td>${empresaLabel(fila.source)}</td>
             <td>${formatFecha(fila.fecha)}</td>
             <td class="motivo-col" title="${escapeHtml(fila.motivo)}">${escapeHtml(fila.motivo)}</td>
             <td><span class="${estadoInfo.clase}">${estadoInfo.label}</span></td>
             <td>${formatEspera(fila.tiempo_espera_minutos)}</td>
-            <td class="acciones-col">${accionesHtml}</td>
+            <td>${detalleHtml}</td>
         `;
 
         tablaSolicitudesEl.appendChild(tr);
@@ -187,47 +225,36 @@ function renderSolicitudes(payload) {
 
     setTextWithBump(countSolicitudesEl, filas.length);
     solicitudesEmptyEl.classList.toggle('is-visible', filas.length === 0);
-
-    tablaSolicitudesEl.querySelectorAll('.btn-aprobar').forEach((btn) => {
-        btn.addEventListener('click', () => aprobar(Number(btn.dataset.id)));
-    });
-
-    tablaSolicitudesEl.querySelectorAll('.btn-rechazar').forEach((btn) => {
-        btn.addEventListener('click', () => abrirModalRechazar(Number(btn.dataset.id), btn.dataset.guia, 'liberacion'));
-    });
 }
 
+// Vista por guía (antes era por lote: #id/Solicitante/Fecha/Guías/Estado,
+// sin mostrar el PR ni poder mostrar el Contenedor) — mismo endpoint
+// aplanado que ya usa Liberación (App\Timbrado\SolicitudTimbradoService::
+// listarConDetalleGuia()), para que el PR y el Contenedor de cada guía
+// del lote sean lo primero que se ve.
 function renderSolicitudesTimbrado(payload) {
     const filas = payload.data ?? [];
+    datosSolicitudesTimbrado = filas;
 
     tablaSolicitudesTimbradoEl.innerHTML = '';
 
     filas.forEach((fila) => {
         const tr = document.createElement('tr');
-        tr.dataset.solicitudId = fila.id;
+        tr.className = claseEspera(fila.tiempo_espera_minutos);
+        tr.dataset.solicitudId = fila.solicitud_id;
 
         const estadoInfo = ESTADO_LABELS[fila.estado] ?? { label: fila.estado, clase: 'badge text-bg-secondary' };
-        const esPendiente = fila.estado === 'PENDIENTE';
-
-        const guiasCount = fila.total_guias || 0;
-
-        const accionesHtml = esPendiente
-            ? `
-                <button class="btn btn-sm btn-success btn-aprobar-timbrado" data-id="${fila.id}" data-guia="Lote #${fila.id}">
-                    <i class="bi bi-check-lg"></i> Aceptar
-                </button>
-                <button class="btn btn-sm btn-outline-danger btn-rechazar-timbrado" data-id="${fila.id}" data-guia="Lote #${fila.id}">
-                    <i class="bi bi-x-lg"></i> Rechazar
-                </button>
-            ` : '—';
 
         tr.innerHTML = `
-            <td><strong>#${fila.id}</strong></td>
-            <td>${escapeHtml(fila.solicitante)}</td>
-            <td>${formatFecha(fila.created_at)}</td>
-            <td>${guiasCount} guía(s)</td>
+            <td><strong>${escapeHtml(fila.num_guia)}</strong><div class="text-muted small">Lote #${fila.solicitud_id}</div></td>
+            <td>${celdaContenedor(fila.contenedor)}</td>
+            <td>${celdaCliente(fila.cliente)}</td>
+            <td>${celdaRuta(fila.ruta_origen, fila.ruta_destino)}</td>
+            <td>${celdaOperadorConSolicitante(fila.operador, fila.autorizo)}</td>
+            <td>${empresaLabel(fila.source)}</td>
+            <td>${formatFecha(fila.fecha)}</td>
             <td><span class="${estadoInfo.clase}">${estadoInfo.label}</span></td>
-            <td class="acciones-col">${accionesHtml}</td>
+            <td>${formatEspera(fila.tiempo_espera_minutos)}</td>
         `;
 
         tablaSolicitudesTimbradoEl.appendChild(tr);
@@ -235,50 +262,19 @@ function renderSolicitudesTimbrado(payload) {
 
     setTextWithBump(countSolicitudesTimbradoEl, filas.length);
     solicitudesTimbradoEmptyEl.classList.toggle('is-visible', filas.length === 0);
-
-    tablaSolicitudesTimbradoEl.querySelectorAll('.btn-aprobar-timbrado').forEach((btn) => {
-        btn.addEventListener('click', () => aprobarTimbrado(Number(btn.dataset.id)));
-    });
-
-    tablaSolicitudesTimbradoEl.querySelectorAll('.btn-rechazar-timbrado').forEach((btn) => {
-        btn.addEventListener('click', () => abrirModalRechazar(Number(btn.dataset.id), btn.dataset.guia, 'timbrado'));
-    });
-}
-
-function renderPorTimbrar(payload) {
-    const filas = payload.data ?? [];
-
-    tablaPorTimbrarEl.innerHTML = '';
-
-    filas.forEach((fila) => {
-        const tr = document.createElement('tr');
-        const cfdiAnterior = fila.factimpresa ? escapeHtml(fila.factimpresa) : '—';
-        const comentario = fila.comen_pre ? escapeHtml(fila.comen_pre) : '—';
-
-        tr.innerHTML = `
-            <td><strong>${escapeHtml(fila.num_guia)}</strong></td>
-            <td>${escapeHtml(fila.autorizo)}</td>
-            <td>${escapeHtml(fila.operador)}</td>
-            <td>${empresaLabel(fila.source)}</td>
-            <td>${formatFecha(fila.fecha)}</td>
-            <td>${formatEspera(fila.tiempo_espera_minutos)}</td>
-            <td>${cfdiAnterior}</td>
-            <td>${comentario}</td>
-        `;
-
-        tablaPorTimbrarEl.appendChild(tr);
-    });
-
-    setTextWithBump(countPorTimbrarEl, filas.length);
-    porTimbrarEmptyEl.classList.toggle('is-visible', filas.length === 0);
 }
 
 function renderKpis(kpis) {
-    setTextWithBump(document.getElementById('kpi-pendientes'), kpis.pendientes);
-    setTextWithBump(document.getElementById('kpi-aprobadas'), kpis.aprobadas_hoy);
-    setTextWithBump(document.getElementById('kpi-rechazadas'), kpis.rechazadas_hoy);
-    setTextWithBump(document.getElementById('kpi-por-timbrar'), kpis.guias_por_timbrar);
-    setTextWithBump(document.getElementById('kpi-tiempo-espera'), kpis.tiempo_promedio_espera_minutos);
+    // Las 4 tarjetas genéricas ("Solicitudes pendientes", "Aprobadas hoy",
+    // "Rechazadas hoy", "Min. promedio de espera") representan el tablero
+    // completo de Facturación (Liberación + Timbrado), no solo Liberación —
+    // ver App\Dashboard\FacturacionResumenKpis::combinar().
+    const resumen = kpis.resumen ?? {};
+    setTextWithBump(document.getElementById('kpi-pendientes'), resumen.pendientes ?? 0);
+    setTextWithBump(document.getElementById('kpi-aprobadas'), resumen.aprobadas_hoy ?? 0);
+    setTextWithBump(document.getElementById('kpi-rechazadas'), resumen.rechazadas_hoy ?? 0);
+    setTextWithBump(document.getElementById('kpi-por-timbrar'), kpis.guias_por_timbrar ?? 0);
+    setTextWithBump(document.getElementById('kpi-tiempo-espera'), resumen.tiempo_promedio_espera_minutos ?? 0);
 }
 
 async function fetchSolicitudes() {
@@ -292,16 +288,11 @@ async function fetchSolicitudes() {
         hasta: filtros.hasta,
         sort: filtros.sort,
         dir: filtros.dir,
-        perPage: 50,
+        perPage: PANEL_SOLICITUDES_PER_PAGE,
     });
 
     const response = await fetch(`/api/facturacion-solicitudes.php?${query}`, { cache: 'no-store' });
     renderSolicitudes(await response.json());
-}
-
-async function fetchPorTimbrar() {
-    const response = await fetch('/api/guias-liberadas.php?perPage=50', { cache: 'no-store' });
-    renderPorTimbrar(await response.json());
 }
 
 async function fetchKpis() {
@@ -309,139 +300,301 @@ async function fetchKpis() {
     renderKpis(await response.json());
 }
 
+// --- Historial completo (pestaña separada del trabajo pendiente) ---
+
+let currentView = 'pendiente';
+let histPage = 1;
+const HIST_PER_PAGE = 25;
+let histTotalTimbrado = 0;
+let histTotalLiberacion = 0;
+
+function getHistFiltros() {
+    return {
+        estado: document.getElementById('hist-filtro-estado').value,
+        empresa: document.getElementById('hist-filtro-empresa').value,
+        operador: document.getElementById('hist-filtro-operador').value.trim(),
+        num_guia: document.getElementById('hist-filtro-num-guia').value.trim(),
+        desde: document.getElementById('hist-filtro-desde').value,
+        hasta: document.getElementById('hist-filtro-hasta').value,
+    };
+}
+
+async function descargarCartaPorte(numGuia, btn) {
+    const textoOriginal = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Descargando…';
+
+    try {
+        const response = await fetch(`/api/timbrado-carta-porte.php?guia=${encodeURIComponent(numGuia)}`, { cache: 'no-store' });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            alert(error.mensaje ?? 'No se pudo descargar el Complemento Carta Porte.');
+
+            return;
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${numGuia}-carta-porte.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = textoOriginal;
+    }
+}
+
+function renderHistorialTimbrado(payload) {
+    const filas = payload.data ?? [];
+    histTotalTimbrado = payload.total ?? filas.length;
+
+    const tabla = document.getElementById('tabla-historial-timbrado');
+    tabla.innerHTML = '';
+
+    filas.forEach((fila) => {
+        const tr = document.createElement('tr');
+        const estadoInfo = ESTADO_LABELS[fila.estado] ?? { label: fila.estado, clase: 'badge text-bg-secondary' };
+
+        const cartaPorteHtml = fila.factura_impresa
+            ? `<button class="btn btn-sm btn-outline-info btn-descargar-cfdi" data-guia="${escapeHtml(fila.num_guia)}">
+                   <i class="bi bi-file-earmark-pdf"></i> Descargar
+               </button>`
+            : '—';
+
+        tr.innerHTML = `
+            <td><strong>${escapeHtml(fila.num_guia)}</strong></td>
+            <td>${escapeHtml(fila.autorizo)}</td>
+            <td>${empresaLabel(fila.source)}</td>
+            <td>${formatFecha(fila.created_at)}</td>
+            <td>${formatFecha(fila.resolved_at)}</td>
+            <td><span class="${estadoInfo.clase}">${estadoInfo.label}</span></td>
+            <td>${cartaPorteHtml}</td>
+        `;
+
+        tabla.appendChild(tr);
+    });
+
+    setTextWithBump(document.getElementById('count-historial-timbrado'), histTotalTimbrado);
+    document.getElementById('historial-timbrado-empty').classList.toggle('is-visible', filas.length === 0);
+
+    tabla.querySelectorAll('.btn-descargar-cfdi').forEach((btn) => {
+        btn.addEventListener('click', () => descargarCartaPorte(btn.dataset.guia, btn));
+    });
+}
+
+function renderHistorialLiberacion(payload) {
+    const filas = payload.data ?? [];
+    histTotalLiberacion = payload.total ?? filas.length;
+
+    const tabla = document.getElementById('tabla-historial-liberacion');
+    tabla.innerHTML = '';
+
+    filas.forEach((fila) => {
+        const tr = document.createElement('tr');
+        const estadoInfo = ESTADO_LABELS[fila.estado] ?? { label: fila.estado, clase: 'badge text-bg-secondary' };
+        const motivo = fila.motivo || fila.error_reason || '—';
+
+        tr.innerHTML = `
+            <td><strong>${escapeHtml(fila.num_guia)}</strong></td>
+            <td>${escapeHtml(fila.autorizo)}</td>
+            <td>${empresaLabel(fila.source)}</td>
+            <td>${formatFecha(fila.created_at)}</td>
+            <td>${formatFecha(fila.resolved_at)}</td>
+            <td>${escapeHtml(fila.resolved_by ?? '—')}</td>
+            <td><span class="${estadoInfo.clase}">${estadoInfo.label}</span></td>
+            <td class="motivo-col" title="${escapeHtml(motivo)}">${escapeHtml(motivo)}</td>
+        `;
+
+        tabla.appendChild(tr);
+    });
+
+    setTextWithBump(document.getElementById('count-historial-liberacion'), histTotalLiberacion);
+    document.getElementById('historial-liberacion-empty').classList.toggle('is-visible', filas.length === 0);
+}
+
+async function fetchHistorialTimbrado() {
+    const filtros = getHistFiltros();
+    const query = buildQuery({ ...filtros, page: histPage, perPage: HIST_PER_PAGE });
+
+    const response = await fetch(`/api/facturacion-solicitudes-timbrado.php?${query}`, { cache: 'no-store' });
+    renderHistorialTimbrado(await response.json());
+}
+
+async function fetchHistorialLiberacion() {
+    const filtros = getHistFiltros();
+    const query = buildQuery({ ...filtros, page: histPage, perPage: HIST_PER_PAGE });
+
+    const response = await fetch(`/api/facturacion-solicitudes.php?${query}`, { cache: 'no-store' });
+    renderHistorialLiberacion(await response.json());
+}
+
+function updateHistPagerLabel() {
+    const totalPaginas = Math.max(1, Math.ceil(Math.max(histTotalTimbrado, histTotalLiberacion) / HIST_PER_PAGE));
+    document.getElementById('hist-pager-label').textContent = `Página ${histPage} de ${totalPaginas}`;
+    document.getElementById('hist-pager-prev').disabled = histPage <= 1;
+    document.getElementById('hist-pager-next').disabled = histPage >= totalPaginas;
+}
+
+async function refreshHistorial() {
+    await Promise.all([fetchHistorialTimbrado(), fetchHistorialLiberacion()]);
+    updateHistPagerLabel();
+}
+
+function switchView(view) {
+    currentView = view;
+
+    document.getElementById('view-pendiente').style.display = view === 'pendiente' ? '' : 'none';
+    document.getElementById('view-historial').style.display = view === 'historial' ? '' : 'none';
+
+    document.getElementById('tab-pendiente').className = view === 'pendiente' ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-outline-secondary';
+    document.getElementById('tab-historial').className = view === 'historial' ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-outline-secondary';
+
+    if (view === 'historial') {
+        refreshHistorial();
+    }
+}
+
 async function fetchSolicitudesTimbrado() {
     const filtros = getFiltros();
     const query = buildQuery({
         estado: filtros.estado,
+        empresa: filtros.empresa,
+        operador: filtros.operador,
+        num_guia: filtros.num_guia,
         desde: filtros.desde,
         hasta: filtros.hasta,
-        perPage: 50,
+        sort: filtros.sort,
+        dir: filtros.dir,
+        perPage: PANEL_SOLICITUDES_PER_PAGE,
     });
 
-    const response = await fetch(`/api/solicitudes-timbrado.php?${query}`, { cache: 'no-store' });
+    const response = await fetch(`/api/facturacion-solicitudes-timbrado.php?${query}`, { cache: 'no-store' });
     renderSolicitudesTimbrado(await response.json());
 }
 
 function refreshAll() {
     fetchSolicitudes();
     fetchSolicitudesTimbrado();
-    fetchPorTimbrar();
     fetchKpis();
+
+    if (currentView === 'historial') {
+        refreshHistorial();
+    }
 }
 
-async function aprobar(id) {
-    const response = await fetch(`/api/solicitudes-liberacion.php?id=${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accion: 'aprobar', actor: getActor() }),
+/**
+ * "Ahora" en la misma hora de pared que usa el servidor para
+ * created_at/resolved_at (America/Mexico_City — ver App\Config\Config),
+ * pero etiquetado como si fuera UTC. Nunca lo es, pero como
+ * minutosTranscurridos() hace la misma "mentira" en los dos extremos de
+ * la resta, la DURACIÓN sigue siendo correcta sin importar en qué huso
+ * horario esté configurado el navegador de quien mira el tablero — antes
+ * `new Date("Y-m-d H:i:s")` se interpretaba como hora LOCAL del navegador,
+ * dando minutos negativos o inflados si esa hora no era Mexico_City.
+ */
+function ahoraServidorComoInstante() {
+    const partes = new Intl.DateTimeFormat('sv-SE', {
+        timeZone: 'America/Mexico_City',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+    }).format(new Date());
+
+    return new Date(partes.replace(' ', 'T') + 'Z');
+}
+
+/**
+ * Minutos transcurridos desde una fecha "Y-m-d H:i:s" (hora del servidor)
+ * hasta ahora. null si la fecha no llegó (nunca debería pasar para
+ * created_at, sí es normal para resolved_at de una solicitud que sigue
+ * PENDIENTE).
+ */
+function minutosTranscurridos(fechaSql) {
+    if (!fechaSql) {
+        return null;
+    }
+
+    const fecha = new Date(String(fechaSql).replace(' ', 'T') + 'Z');
+
+    if (Number.isNaN(fecha.getTime())) {
+        return null;
+    }
+
+    return (ahoraServidorComoInstante().getTime() - fecha.getTime()) / 60000;
+}
+
+/**
+ * Cuenta, dentro de un panel de "Solicitudes" (Timbrado o Liberación),
+ * cuántas llevan más de ALERTA_UMBRAL_MINUTOS en cada una de las dos
+ * etapas que pidió Facturación: pendientes sin aceptar (desde created_at)
+ * y ya aceptadas pero sin atender (desde resolved_at, solo mientras el
+ * estado siga en progreso — nunca sobre algo ya resuelto).
+ */
+function contarVencidas(filas, estadosAceptada) {
+    let pendientes = 0;
+    let aceptadas = 0;
+
+    filas.forEach((fila) => {
+        if (fila.estado === 'PENDIENTE') {
+            const minutos = minutosTranscurridos(fila.created_at);
+
+            if (minutos !== null && minutos >= ALERTA_UMBRAL_MINUTOS) {
+                pendientes += 1;
+            }
+        } else if (estadosAceptada.includes(fila.estado)) {
+            const minutos = minutosTranscurridos(fila.resolved_at);
+
+            if (minutos !== null && minutos >= ALERTA_UMBRAL_MINUTOS) {
+                aceptadas += 1;
+            }
+        }
     });
 
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        alert(`No se pudo aprobar: ${error.mensaje ?? response.statusText}`);
+    return { pendientes, aceptadas };
+}
 
+/**
+ * Revisa ambos paneles y muestra/oculta el letrero de alerta. A propósito
+ * se llama cada ALERTA_INTERVALO_MS (10s) sin importar si hubo un evento
+ * nuevo — el paso del tiempo por sí solo puede hacer que una solicitud
+ * cruce el umbral, y antes de esto nada recalculaba tiempo_espera sin un
+ * evento de WebSocket de por medio. Mientras haya algo que alertar, el
+ * sonido se repite en cada tick (a propósito, para que sea difícil de
+ * ignorar) — deja de sonar solo cuando ya no hay nada vencido.
+ */
+function evaluarAlertaDesatendidas() {
+    const liberacion = contarVencidas(datosSolicitudesLiberacion, ESTADOS_ACEPTADA_LIBERACION);
+    const timbrado = contarVencidas(datosSolicitudesTimbrado, ESTADOS_ACEPTADA_TIMBRADO);
+
+    const totalPendientes = liberacion.pendientes + timbrado.pendientes;
+    const totalAceptadas = liberacion.aceptadas + timbrado.aceptadas;
+
+    const banner = document.getElementById('alerta-desatendidas');
+    const texto = document.getElementById('alerta-desatendidas-texto');
+
+    if (totalPendientes + totalAceptadas === 0) {
+        banner.classList.add('is-hidden');
         return;
     }
 
-    fetchSolicitudes();
-    fetchKpis();
-}
+    const partes = [];
 
-async function aprobarTimbrado(id) {
-    const response = await fetch(`/api/solicitudes-timbrado.php?id=${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accion: 'aprobar', actor: getActor() }),
-    });
-
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        alert(`No se pudo aprobar: ${error.mensaje ?? response.statusText}`);
-        return;
+    if (totalPendientes > 0) {
+        partes.push(`${totalPendientes} sin aceptar`);
     }
 
-    fetchSolicitudesTimbrado();
-    fetchKpis();
-}
-
-let rechazarContexto = null;
-
-function abrirModalRechazar(id, numGuia, tipo = 'liberacion') {
-    rechazarContexto = { id, tipo };
-    document.getElementById('modal-rechazar-guias').textContent = numGuia;
-    document.getElementById('modal-rechazar-motivo').value = '';
-
-    const modalEl = document.getElementById('modal-rechazar');
-    bootstrap.Modal.getOrCreateInstance(modalEl).show();
-}
-
-async function confirmarRechazo() {
-    if (!rechazarContexto) {
-        return;
+    if (totalAceptadas > 0) {
+        partes.push(`${totalAceptadas} aceptada(s) sin atender`);
     }
 
-    const motivo = document.getElementById('modal-rechazar-motivo').value.trim();
-
-    if (motivo === '') {
-        document.getElementById('modal-rechazar-motivo').classList.add('is-invalid');
-
-        return;
-    }
-
-    const isTimbrado = rechazarContexto.tipo === 'timbrado';
-    const endpoint = isTimbrado ? '/api/solicitudes-timbrado.php' : '/api/solicitudes-liberacion.php';
-
-    const response = await fetch(`${endpoint}?id=${rechazarContexto.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accion: 'rechazar', actor: getActor(), motivo }),
-    });
-
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        alert(`No se pudo rechazar: ${error.mensaje ?? response.statusText}`);
-
-        return;
-    }
-
-    bootstrap.Modal.getInstance(document.getElementById('modal-rechazar'))?.hide();
-    rechazarContexto = null;
-
-    if (isTimbrado) {
-        fetchSolicitudesTimbrado();
-    } else {
-        fetchSolicitudes();
-    }
-    fetchKpis();
-}
-
-function addActivityEntry(type, detalle) {
-    const meta = ACTIVITY_TYPES[type] ?? ACTIVITY_TYPES.solicitada;
-    const entry = document.createElement('div');
-    entry.className = `activity-entry activity-entry--${type}`;
-
-    const time = new Date().toLocaleTimeString('es-MX', { hour12: false });
-
-    entry.innerHTML = `
-        <i class="bi ${meta.icon} activity-entry__icon"></i>
-        <div class="activity-entry__body">
-            <span class="activity-entry__time">${escapeHtml(time)}</span>
-            <span class="activity-entry__label">${escapeHtml(meta.label)}</span>
-            <span class="activity-entry__pr">${escapeHtml(detalle)}</span>
-        </div>
-    `;
-
-    activityEntriesEl.prepend(entry);
-
-    while (activityEntriesEl.children.length > ACTIVITY_LOG_LIMIT) {
-        activityEntriesEl.lastElementChild.remove();
-    }
-
-    activityLogEl.classList.remove('is-empty');
-}
-
-function resumenGuias(guias) {
-    return (guias ?? []).map((g) => g.num_guia).join(', ') || `solicitud`;
+    texto.textContent = `${partes.join(' · ')} — llevan más de ${ALERTA_UMBRAL_MINUTOS} min`;
+    banner.classList.remove('is-hidden');
+    soundManager.playStampError();
 }
 
 function handleMessage(event) {
@@ -449,43 +602,56 @@ function handleMessage(event) {
 
     switch (message.event) {
         case 'guia.liberacion_solicitada':
-            addActivityEntry('solicitada', resumenGuias(message.payload.guias));
+            soundManager.playReleaseRequested();
             refreshAll();
             break;
         case 'solicitud_liberacion.aprobada':
-            addActivityEntry('aprobada', resumenGuias(message.payload.guias));
+            soundManager.playStampSuccess();
             refreshAll();
             break;
         case 'solicitud_liberacion.rechazada':
-            addActivityEntry('rechazada', resumenGuias(message.payload.guias));
+            soundManager.playStampError();
             refreshAll();
             break;
         case 'guia.liberacion_ejecutando':
-            addActivityEntry('ejecutando', resumenGuias(message.payload.guias));
             refreshAll();
             break;
         case 'guia.liberacion_completada':
-            addActivityEntry('completada', `solicitud #${message.payload.solicitud_id}`);
+            soundManager.playStampSuccess();
             refreshAll();
             break;
         case 'guia.liberacion_error':
-            addActivityEntry('error', message.payload.motivo ?? `solicitud #${message.payload.solicitud_id}`);
+            soundManager.playStampError();
             refreshAll();
             break;
         case 'guia.timbrado_solicitado':
-            addActivityEntry('timbrado_solicitado', resumenGuias(message.payload.guias));
+            soundManager.playReleaseRequested();
             refreshAll();
             break;
         case 'solicitud_timbrado.aprobada':
-            addActivityEntry('timbrado_aprobado', resumenGuias(message.payload.guias));
+            soundManager.playStampSuccess();
             refreshAll();
             break;
         case 'solicitud_timbrado.rechazada':
-            addActivityEntry('timbrado_rechazado', resumenGuias(message.payload.guias));
+            soundManager.playStampError();
             refreshAll();
             break;
         case 'guia.timbrado_completado':
-            addActivityEntry('timbrado_completado', resumenGuias(message.payload.guias));
+            soundManager.playStampSuccess();
+            refreshAll();
+            break;
+        case 'guia.timbrado_concluido':
+            // Confirmación definitiva vía App\Monitoring\Timbrado\
+            // TimbradoConclusionWatcher — una solicitud puede llegar a
+            // CONCLUIDA sin pasar nunca por TIMBRADO (ver docblock de
+            // TimbradoConclusionEvidenceSource::buscar()), así que este
+            // evento es, para esos casos, la única señal de que ya
+            // terminó. Sin este case el tablero se quedaba mostrando el
+            // estado anterior indefinidamente.
+            soundManager.playStampSuccess();
+            refreshAll();
+            break;
+        case 'dashboard.reset_diario':
             refreshAll();
             break;
         default:
@@ -558,16 +724,6 @@ function tickClock() {
 
 // --- Inicialización ---
 
-const actorGuardado = localStorage.getItem(ACTOR_STORAGE_KEY);
-
-if (actorGuardado) {
-    document.getElementById('filtro-actor').value = actorGuardado;
-}
-
-document.getElementById('filtro-actor').addEventListener('change', (evt) => {
-    localStorage.setItem(ACTOR_STORAGE_KEY, evt.target.value.trim());
-});
-
 // filtro-estado y filtro-desde/hasta son compartidos por las tablas de
 // Liberación y de Timbrado (ver getFiltros()) — deben refrescar ambas, o
 // la tabla de Timbrado se queda mostrando los resultados del filtro
@@ -595,16 +751,37 @@ document.getElementById('ordenar-dir').addEventListener('click', (evt) => {
     fetchSolicitudesTimbrado();
 });
 
-document.getElementById('modal-rechazar-confirmar').addEventListener('click', confirmarRechazo);
-document.getElementById('modal-rechazar-motivo').addEventListener('input', (evt) => {
-    evt.target.classList.remove('is-invalid');
+document.getElementById('tab-pendiente').addEventListener('click', () => switchView('pendiente'));
+document.getElementById('tab-historial').addEventListener('click', () => switchView('historial'));
+
+['hist-filtro-estado', 'hist-filtro-empresa', 'hist-filtro-operador', 'hist-filtro-num-guia', 'hist-filtro-desde', 'hist-filtro-hasta'].forEach((id) => {
+    document.getElementById(id).addEventListener('change', () => {
+        histPage = 1;
+        refreshHistorial();
+    });
 });
 
-activityLogEl.classList.add('is-empty');
+document.getElementById('hist-filtro-num-guia').addEventListener('keyup', (evt) => {
+    if (evt.key === 'Enter') {
+        histPage = 1;
+        refreshHistorial();
+    }
+});
+
+document.getElementById('hist-pager-prev').addEventListener('click', () => {
+    if (histPage > 1) {
+        histPage -= 1;
+        refreshHistorial();
+    }
+});
+
+document.getElementById('hist-pager-next').addEventListener('click', () => {
+    histPage += 1;
+    refreshHistorial();
+});
 
 renderSolicitudes(JSON.parse(document.getElementById('initial-solicitudes').textContent || '{"data":[]}'));
 renderSolicitudesTimbrado(JSON.parse(document.getElementById('initial-solicitudes-timbrado').textContent || '{"data":[]}'));
-renderPorTimbrar(JSON.parse(document.getElementById('initial-por-timbrar').textContent || '{"data":[]}'));
 renderKpis(JSON.parse(document.getElementById('initial-kpis').textContent || '{}'));
 
 tickClock();
@@ -612,5 +789,8 @@ setInterval(tickClock, 1000);
 
 refreshEngineStatus();
 setInterval(refreshEngineStatus, 5000);
+
+evaluarAlertaDesatendidas();
+setInterval(evaluarAlertaDesatendidas, ALERTA_INTERVALO_MS);
 
 connect();

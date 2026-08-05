@@ -14,6 +14,15 @@ class LiberacionApprovedTemplate implements MattermostTemplate
     public function render(DomainEvent $event): string
     {
         /** @var LiberacionApproved $event */
-        return sprintf("✅ **Liberación Aprobada**\n- Guía ID: %s\n- Fecha: %s", $event->guiaId, $event->getOccurredOn()->format('Y-m-d H:i:s'));
+        $pr = RutaBloque::seccionPr($event->data['rutas'] ?? null, $event->data['guias'] ?? null, $event->guiaId);
+        $empresa = EmpresaLabel::desde($event->data['empresa'] ?? null);
+        $usuario = $event->data['usuario'] ?? 'Sistema';
+        $fecha = $event->getOccurredOn()->format('d/m/Y');
+        $hora = $event->getOccurredOn()->format('H:i:s');
+
+        return sprintf(
+            "✅ **LIBERACIÓN APROBADA**\n\n%s\n\n**Empresa:**\n%s\n\n**Usuario que aprobó:**\n%s\n\n**Fecha:**\n%s\n\n**Hora:**\n%s",
+            $pr, $empresa, $usuario, $fecha, $hora
+        );
     }
 }

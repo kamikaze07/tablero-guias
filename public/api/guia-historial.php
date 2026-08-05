@@ -33,18 +33,16 @@ try {
     $historial = [];
 
     // 1. Obtener información de la guía desde la tabla guias local
-    $stmtGuia = $connection->prepare("SELECT fecha, hora, operador, source as empresa FROM guias WHERE num_guia = :guia LIMIT 1");
+    // `fecha` ya es un DATETIME completo (fecha+hora) — no existe una
+    // columna `hora` separada en esta tabla (la había en versiones previas
+    // de este archivo, causaba que toda petición fallara con 500).
+    $stmtGuia = $connection->prepare("SELECT id, fecha, operador, source as empresa FROM guias WHERE num_guia = :guia LIMIT 1");
     $stmtGuia->execute(['guia' => $numGuia]);
     $guiaBase = $stmtGuia->fetch(PDO::FETCH_ASSOC);
 
     if ($guiaBase) {
         $fechaCreacion = trim($guiaBase['fecha']);
-        if (!empty($guiaBase['hora']) && $guiaBase['hora'] !== '00:00:00' && $guiaBase['hora'] !== '00:00:00.0000000') {
-            $fechaCreacion .= ' ' . substr($guiaBase['hora'], 0, 8);
-        } else {
-            $fechaCreacion .= ' 00:00:00';
-        }
-        
+
         $historial[] = [
             'fecha' => $fechaCreacion,
             'actor' => 'SICRET',
@@ -102,6 +100,18 @@ try {
             if (isset($creacionTimbrado[$solId])) {
                 $duracion = gmdate("H:i:s", strtotime($ev['created_at']) - strtotime($creacionTimbrado[$solId]));
             }
+        } elseif ($ev['evento'] === 'TIMBRADO') {
+            // App\Monitoring\Timbrado\TimbradoConfirmationWatcher::alConfirmar()
+            // registra este evento cuando confirma el timbrado real contra SICRET
+            // (ver ese archivo) — sin esta rama caía en los valores por defecto
+            // de arriba ('Solicitud de Timbrado' / PENDIENTE), dejando el
+            // historial operativo estancado en un estado "pendiente" fantasma
+            // aunque la guía ya estuviera timbrada.
+            $tipo = 'Guía timbrada';
+            $resultado = 'OK';
+            if (isset($creacionTimbrado[$solId])) {
+                $duracion = gmdate("H:i:s", strtotime($ev['created_at']) - strtotime($creacionTimbrado[$solId]));
+            }
         } elseif ($ev['evento'] === 'CREADA') {
             $tipo = 'Solicitud de Timbrado';
             $resultado = 'CREADA';
@@ -117,6 +127,39 @@ try {
             'motivo' => ($ev['evento'] === 'RECHAZADA') ? ($ev['detalle'] ?? '') : '',
             'duracion' => $duracion
         ];
+    }
+
+    // 2b. Timbrado directo en SICRET, sin Solicitud de Timbrado previa (ver
+    // App\Monitoring\Timbrado\DirectStampingWatcher) — esta guía nunca pasa
+    // por solicitud_timbrado_historial, así que el bloque de arriba no
+    // aporta ningún evento para ella; sin esto, el historial quedaba mudo
+    // después de "Asignada al operador" pese a que la guía sí se timbró.
+    // Solo aplica si el bloque de arriba no encontró ya un evento TIMBRADO
+    // (flujo normal) para no duplicar la misma confirmación.
+    $yaTieneTimbradoConfirmado = in_array('TIMBRADO', array_column($eventosTimbrado, 'evento'), true);
+
+    if (!$yaTieneTimbradoConfirmado && $guiaBase && isset($guiaBase['id'])) {
+        $stmtDirecto = $connection->prepare("
+            SELECT factura_impresa, updated_at
+            FROM guia_estado_tablero
+            WHERE guia_id = :guia_id AND estado = 'TIMBRADO' AND factura_impresa IS NOT NULL
+            LIMIT 1
+        ");
+        $stmtDirecto->execute(['guia_id' => $guiaBase['id']]);
+        $directo = $stmtDirecto->fetch(PDO::FETCH_ASSOC);
+
+        if ($directo) {
+            $historial[] = [
+                'fecha' => $directo['updated_at'],
+                'actor' => 'direct-stamping-watcher',
+                'empresa' => $guiaBase['empresa'] ?? '',
+                'tipo' => 'Guía timbrada',
+                'resultado' => 'OK',
+                'observaciones' => 'Timbrado directo en SICRET, sin Solicitud de Timbrado previa.',
+                'motivo' => '',
+                'duracion' => ''
+            ];
+        }
     }
 
     // 3. Historial de Liberación

@@ -43,29 +43,36 @@
     <div class="kpi-card kpi-card--generada">
         <i class="bi bi-file-earmark-plus-fill kpi-card__icon"></i>
         <div class="kpi-card__text">
-            <span id="kpi-generadas" class="kpi-card__value">0</span>
-            <span class="kpi-card__label">Guías Generadas</span>
+            <span id="kpi-guias-creadas" class="kpi-card__value"><?= (int) $kpisIniciales['guias_creadas'] ?></span>
+            <span class="kpi-card__label">Guías Creadas</span>
         </div>
     </div>
-    <div class="kpi-card kpi-card--liberacion">
-        <i class="bi bi-send-fill kpi-card__icon"></i>
+    <div class="kpi-card kpi-card--exito">
+        <i class="bi bi-check-all kpi-card__icon"></i>
         <div class="kpi-card__text">
-            <span id="kpi-liberacion" class="kpi-card__value">0</span>
-            <span class="kpi-card__label">Solicitadas a Liberación</span>
+            <span id="kpi-timbrado-aprobadas" class="kpi-card__value"><?= (int) $kpisIniciales['timbrado_aprobadas'] ?></span>
+            <span class="kpi-card__label">Aprobadas para Timbrar</span>
+        </div>
+    </div>
+    <div class="kpi-card kpi-card--error">
+        <i class="bi bi-x-square-fill kpi-card__icon"></i>
+        <div class="kpi-card__text">
+            <span id="kpi-timbrado-rechazadas" class="kpi-card__value"><?= (int) $kpisIniciales['timbrado_rechazadas'] ?></span>
+            <span class="kpi-card__label">Rechazadas para Timbrar</span>
         </div>
     </div>
     <div class="kpi-card kpi-card--exito">
         <i class="bi bi-check-circle-fill kpi-card__icon"></i>
         <div class="kpi-card__text">
-            <span id="kpi-exito" class="kpi-card__value">0</span>
-            <span class="kpi-card__label">Timbradas Correctamente</span>
+            <span id="kpi-liberacion-aprobadas" class="kpi-card__value"><?= (int) $kpisIniciales['liberacion_aprobadas'] ?></span>
+            <span class="kpi-card__label">Aprobadas para Liberación</span>
         </div>
     </div>
     <div class="kpi-card kpi-card--error">
-        <i class="bi bi-exclamation-triangle-fill kpi-card__icon"></i>
+        <i class="bi bi-x-circle-fill kpi-card__icon"></i>
         <div class="kpi-card__text">
-            <span id="kpi-error" class="kpi-card__value">0</span>
-            <span class="kpi-card__label">Timbradas con Error</span>
+            <span id="kpi-liberacion-rechazadas" class="kpi-card__value"><?= (int) $kpisIniciales['liberacion_rechazadas'] ?></span>
+            <span class="kpi-card__label">Rechazadas para Liberación</span>
         </div>
     </div>
 </section>
@@ -115,7 +122,7 @@
 
     <section class="board-column board-column--timbrado">
         <header class="board-column__header">
-            <span class="board-column__title"><i class="bi bi-receipt"></i> Resultado del Timbrado</span>
+            <span class="board-column__title"><i class="bi bi-receipt"></i> Respuesta de Solicitudes</span>
             <span id="count-timbrado" class="board-column__count">0</span>
         </header>
         <div id="panel-timbrado" class="board-column__body">
@@ -126,19 +133,6 @@
             <div class="board-column__cards"></div>
         </div>
     </section>
-
-    <aside class="activity-panel">
-        <header class="activity-panel__header">
-            <span class="activity-panel__title"><i class="bi bi-activity"></i> Actividad Reciente</span>
-        </header>
-        <div id="activity-log" class="activity-panel__body">
-            <div class="activity-panel__empty">
-                <i class="bi bi-clock-history"></i>
-                <p>Sin actividad todavía</p>
-            </div>
-            <div class="activity-panel__entries"></div>
-        </div>
-    </aside>
 </main>
 
 <script id="initial-guias" type="application/json"><?= json_encode($boardState['generadas'], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?></script>

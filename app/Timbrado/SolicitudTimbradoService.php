@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Timbrado;
 
+use App\Liberacion\ClienteLookup;
+use App\Liberacion\ContenedorLookup;
 use App\Liberacion\GuiaLookupRepository;
 use App\Sync\EventPublisher;
 use App\Sync\SyncLogger;
@@ -36,6 +38,9 @@ final class SolicitudTimbradoService
     public function __construct(
         private readonly PDO $connection,
         private readonly GuiaLookupRepository $guiaLookupRepository,
+        private readonly RutaLookup $rutaLookup,
+        private readonly ContenedorLookup $contenedorLookup,
+        private readonly ClienteLookup $clienteLookup,
         private readonly SolicitudTimbradoRepository $solicitudRepository,
         private readonly SolicitudTimbradoDetalleRepository $detalleRepository,
         private readonly SolicitudTimbradoHistorialRepository $historialRepository,
@@ -53,7 +58,7 @@ final class SolicitudTimbradoService
      */
     public function crear(SolicitudTimbradoPayload $payload): array
     {
-        $guias = $this->resolverGuias($payload->numGuias);
+        $guias = $this->resolverGuias($payload->numGuias, $payload->source);
 
         $this->connection->beginTransaction();
 
@@ -89,16 +94,48 @@ final class SolicitudTimbradoService
 
         $this->publicarEvento($solicitudId, $guias);
 
+        // Origen/Destino (nombre corto + localidad) y Cliente por guía,
+        // agrupados de mayor a menor tamaño de grupo — ver
+        // App\Timbrado\RutaLookup / App\Liberacion\ClienteLookup. El mismo
+        // agrupado alimenta tanto el drawer de autorización (trafico-system,
+        // vía este arreglo) como el mensaje de Mattermost de abajo.
+        $contenedores = $this->contenedorLookup->porNumGuia($guias);
+        $clientesDetalle = $this->clienteLookup->conClaveGenePorNumGuia($guias);
+        $clientes = array_map(static fn (array $c): string => $c['nombre'], $clientesDetalle);
+        $rutas = $this->aplicarDatos($this->rutaLookup->agruparPorRuta($guias), $contenedores, $clientes);
+
         $solicitud = $this->solicitudRepository->encontrarPorId($solicitudId);
         $solicitud['guias'] = array_map(
-            static fn (array $g): array => ['guia_id' => $g['guia_id'], 'num_guia' => $g['num_guia']],
+            static fn (array $g): array => [
+                'guia_id' => $g['guia_id'],
+                'num_guia' => $g['num_guia'],
+                'contenedor' => $contenedores[$g['num_guia']] ?? '',
+            ],
             $guias,
         );
+        $solicitud['rutas'] = $rutas;
+        // Grupo Inteligente (Sprint 1, knowledge/sprint1_grupo_inteligente.md):
+        // agrupado por Cliente+Origen+Destino, campo NUEVO — `rutas` arriba
+        // se deja intacto para no romper ningún consumidor actual (drawer,
+        // Mattermost). NO agrupa CFDIs: cada guía sigue timbrándose por
+        // separado, el grupo es solo contexto de captura para sprints
+        // futuros que aún no consumen este campo.
+        $solicitud['grupos'] = $this->rutaLookup->agruparPorClienteYRuta($guias, $clientesDetalle);
 
         if ($this->dispatcher) {
-            foreach ($guias as $guia) {
-                $this->dispatcher->dispatch(new TimbradoRequested($guia['num_guia'], ['solicitud_id' => $solicitudId]));
-            }
+            // Un solo mensaje de Mattermost por solicitud, con todas las
+            // guías del lote agrupadas por (origen, destino) — nunca uno
+            // por guía (ver
+            // App\Notifications\Consumers\Mattermost\Templates\TimbradoRequestedTemplate).
+            $this->dispatcher->dispatch(new TimbradoRequested(
+                implode("\n", array_map(static fn (array $g): string => "- {$g['num_guia']}", $guias)),
+                [
+                    'solicitud_id' => $solicitudId,
+                    'usuario' => $payload->solicitante ?? self::ORIGEN,
+                    'empresa' => $payload->source ?? 'N/A',
+                    'rutas' => $rutas,
+                ],
+            ));
         }
 
         return $solicitud;
@@ -113,10 +150,77 @@ final class SolicitudTimbradoService
             return null;
         }
 
-        $solicitud['guias'] = $this->detalleRepository->porSolicitud($id);
+        $guiasConSource = $this->conSource($this->detalleRepository->porSolicitud($id));
+        $contenedores = $this->contenedorLookup->porNumGuia($guiasConSource);
+        $clientesDetalle = $this->clienteLookup->conClaveGenePorNumGuia($guiasConSource);
+        $clientes = array_map(static fn (array $c): string => $c['nombre'], $clientesDetalle);
+
+        $solicitud['guias'] = array_map(
+            static fn (array $g): array => [
+                ...$g,
+                'contenedor' => $contenedores[$g['num_guia']] ?? '',
+                'cliente' => $clientes[$g['num_guia']] ?? '',
+            ],
+            $guiasConSource,
+        );
+        $solicitud['rutas'] = $this->aplicarDatos($this->rutaLookup->agruparPorRuta($guiasConSource), $contenedores, $clientes);
+        // Grupo Inteligente (Sprint 1) — ver comentario equivalente en crear().
+        $solicitud['grupos'] = $this->rutaLookup->agruparPorClienteYRuta($guiasConSource, $clientesDetalle);
         $solicitud['historial'] = $this->historialRepository->porSolicitud($id);
 
         return $solicitud;
+    }
+
+    /**
+     * Agrega `contenedor`/`cliente` a cada guía dentro de los grupos que
+     * arma App\Timbrado\RutaLookup::agruparPorRuta() — esos grupos no
+     * cargan `source`, así que ambos mapas (num_guia => dato) deben venir
+     * ya resueltos (ver App\Liberacion\ContenedorLookup::porNumGuia() /
+     * App\Liberacion\ClienteLookup::porNumGuia()).
+     *
+     * @param array<int, array{origen: string, destino: string, guias: array<int, array{guia_id: ?int, num_guia: string}>}> $rutas
+     * @param array<string, string> $contenedores
+     * @param array<string, string> $clientes
+     * @return array<int, array{origen: string, destino: string, guias: array<int, array{guia_id: ?int, num_guia: string, contenedor: string, cliente: string}>}>
+     */
+    private function aplicarDatos(array $rutas, array $contenedores, array $clientes): array
+    {
+        foreach ($rutas as &$ruta) {
+            $ruta['guias'] = array_map(
+                static fn (array $g): array => [
+                    ...$g,
+                    'contenedor' => $contenedores[$g['num_guia']] ?? '',
+                    'cliente' => $clientes[$g['num_guia']] ?? '',
+                ],
+                $ruta['guias'],
+            );
+        }
+        unset($ruta);
+
+        return $rutas;
+    }
+
+    /**
+     * `solicitud_timbrado_detalle` no guarda `source` (ver schema) — se
+     * resuelve aquí desde `guias` para App\Timbrado\RutaLookup, que
+     * necesita saber contra qué fuente de SICRET (sicrePR/sicreGero)
+     * consultar cada folio.
+     *
+     * @param array<int, array{guia_id: int, num_guia: string}> $guias
+     * @return array<int, array{guia_id: int, num_guia: string, source: string}>
+     */
+    private function conSource(array $guias): array
+    {
+        $porId = [];
+
+        foreach ($this->guiaLookupRepository->buscarPorId(array_column($guias, 'guia_id')) as $fila) {
+            $porId[(int) $fila['id']] = $fila['source'];
+        }
+
+        return array_map(
+            static fn (array $g): array => [...$g, 'source' => $porId[$g['guia_id']] ?? ''],
+            $guias,
+        );
     }
 
     /**
@@ -149,11 +253,38 @@ final class SolicitudTimbradoService
      */
     public function listarConDetalleGuia(array $filtros, string $sort, string $dir, int $page, int $perPage): array
     {
+        $data = $this->solicitudRepository->listarConDetalleGuia($filtros, $sort, $dir, $page, $perPage);
+
+        // Origen/Destino de RUTA (nombre corto + localidad) y Cliente por
+        // guía — ver App\Timbrado\RutaLookup / App\Liberacion\ClienteLookup.
+        // Nombrados `ruta_*` a propósito: la fila ya trae `origen` (columna
+        // `solicitud_timbrado.origen`, quién CREÓ la solicitud — siempre
+        // "trafico-system", nada que ver con geografía) y sobrescribirlo
+        // habría sido un bug silencioso. trafico-system (AvisosModel)
+        // agrupa estas filas por solicitud_id y usa estos campos para el
+        // mismo agrupado por ruta que ve el drawer de autorización.
+        $guiasConSource = array_map(
+            static fn (array $row): array => ['num_guia' => $row['num_guia'], 'source' => $row['source']],
+            $data,
+        );
+        $rutas = $this->rutaLookup->porNumGuia($guiasConSource);
+        $contenedores = $this->contenedorLookup->porNumGuia($guiasConSource);
+        $clientes = $this->clienteLookup->porNumGuia($guiasConSource);
+
+        foreach ($data as &$row) {
+            $ruta = $rutas[$row['num_guia']] ?? ['origen' => '', 'destino' => ''];
+            $row['ruta_origen'] = $ruta['origen'];
+            $row['ruta_destino'] = $ruta['destino'];
+            $row['cliente'] = $clientes[$row['num_guia']] ?? '';
+            $row['contenedor'] = $contenedores[$row['num_guia']] ?? '';
+        }
+        unset($row);
+
         return [
             'total' => $this->solicitudRepository->contarConDetalleGuia($filtros),
             'page' => $page,
             'perPage' => $perPage,
-            'data' => $this->solicitudRepository->listarConDetalleGuia($filtros, $sort, $dir, $page, $perPage),
+            'data' => $data,
         ];
     }
 
@@ -192,16 +323,22 @@ final class SolicitudTimbradoService
         $this->eventPublisher->publish(self::EVENTO_APROBADA, [
             'solicitud_id' => $id,
             'actor' => $actor,
-            'guias' => array_map(
-                static fn (array $g): array => ['id' => (int) $g['guia_id'], 'num_guia' => $g['num_guia']],
-                $guias,
-            ),
+            'guias' => $this->guiasParaWebSocket($guias),
         ]);
 
         if ($this->dispatcher) {
-            foreach ($guias as $guia) {
-                $this->dispatcher->dispatch(new TimbradoApproved($guia['num_guia'], ['solicitud_id' => $id, 'actor' => $actor]));
-            }
+            // Mismo criterio que rechazar(): un solo mensaje de Mattermost
+            // por solicitud, con la lista completa de guías, nunca uno por
+            // guía (ver App\Notifications\Consumers\Mattermost\Templates\TimbradoApprovedTemplate).
+            $this->dispatcher->dispatch(new TimbradoApproved(
+                implode("\n", array_map(static fn (array $g): string => "- {$g['num_guia']}", $guias)),
+                [
+                    'solicitud_id' => $id,
+                    'usuario' => $actor,
+                    'empresa' => $this->resolverEmpresas($guias),
+                    'rutas' => $this->rutasParaEvento($guias),
+                ],
+            ));
         }
 
         return $this->obtener($id) ?? throw SolicitudTimbradoValidationException::solicitudNoEncontrada($id);
@@ -249,16 +386,24 @@ final class SolicitudTimbradoService
             'solicitud_id' => $id,
             'actor' => $actor,
             'motivo' => $motivo,
-            'guias' => array_map(
-                static fn (array $g): array => ['id' => (int) $g['guia_id'], 'num_guia' => $g['num_guia']],
-                $guias,
-            ),
+            'guias' => $this->guiasParaWebSocket($guias),
         ]);
 
         if ($this->dispatcher) {
-            foreach ($guias as $guia) {
-                $this->dispatcher->dispatch(new TimbradoRejected($guia['num_guia'], ['solicitud_id' => $id, 'motivo' => $motivo]));
-            }
+            // Mismo criterio que crear(): un solo mensaje de Mattermost por
+            // solicitud, con la lista completa de guías, el usuario real
+            // que rechazó y la empresa resuelta desde `guias` (el rechazo
+            // no recibe un payload con `source`, a diferencia de crear()).
+            $this->dispatcher->dispatch(new TimbradoRejected(
+                implode("\n", array_map(static fn (array $g): string => "- {$g['num_guia']}", $guias)),
+                [
+                    'solicitud_id' => $id,
+                    'motivo' => $motivo,
+                    'usuario' => $actor,
+                    'empresa' => $this->resolverEmpresas($guias),
+                    'rutas' => $this->rutasParaEvento($guias),
+                ],
+            ));
         }
 
         return $this->obtener($id) ?? throw SolicitudTimbradoValidationException::solicitudNoEncontrada($id);
@@ -269,10 +414,19 @@ final class SolicitudTimbradoService
      * algún folio no existe o es ambiguo entre fuentes — misma regla que
      * App\Liberacion\SolicitudLiberacionService::resolverGuias().
      *
+     * `$source`, cuando viene informado por el llamador (trafico-system
+     * manda la empresa activa de la sesión — ver
+     * SolicitudTimbradoPayload::fromArray()), desambigua un `num_guia` que
+     * exista en más de una fuente en vez de rechazarlo directamente: se
+     * descartan las coincidencias de cualquier otra fuente antes de decidir
+     * si el folio quedó resuelto, es ambiguo o no existe. Si `$source` es
+     * null (compatibilidad con llamadores que no lo manden), el
+     * comportamiento es exactamente el de siempre.
+     *
      * @param string[] $numGuias
-     * @return array<int, array{guia_id: int, num_guia: string}>
+     * @return array<int, array{guia_id: int, num_guia: string, source: string}>
      */
-    private function resolverGuias(array $numGuias): array
+    private function resolverGuias(array $numGuias, ?string $source = null): array
     {
         $filas = $this->guiaLookupRepository->buscarPorNumGuia($numGuias);
 
@@ -289,6 +443,13 @@ final class SolicitudTimbradoService
         foreach ($numGuias as $numGuia) {
             $coincidencias = $porNumGuia[$numGuia] ?? [];
 
+            if ($source !== null) {
+                $coincidencias = array_values(array_filter(
+                    $coincidencias,
+                    static fn (array $fila): bool => $fila['source'] === $source,
+                ));
+            }
+
             if ($coincidencias === []) {
                 $noEncontradas[] = $numGuia;
 
@@ -304,6 +465,7 @@ final class SolicitudTimbradoService
             $resueltas[] = [
                 'guia_id' => (int) $coincidencias[0]['id'],
                 'num_guia' => $numGuia,
+                'source' => $coincidencias[0]['source'],
             ];
         }
 
@@ -320,15 +482,80 @@ final class SolicitudTimbradoService
         return $resueltas;
     }
 
+    /**
+     * `empresa` para notificaciones que ocurren después de crear() (p. ej.
+     * rechazar()), donde ya no se tiene el `source` que mandó trafico-system
+     * en el payload original — se resuelve en vivo desde `guias`. Casi
+     * siempre una sola empresa; si el lote mezcla fuentes, se listan todas.
+     *
+     * @param array<int, array{guia_id: int, num_guia: string}> $guias
+     */
+    private function resolverEmpresas(array $guias): string
+    {
+        $filas = $this->guiaLookupRepository->buscarPorId(array_column($guias, 'guia_id'));
+        $fuentes = array_unique(array_column($filas, 'source'));
+
+        return $fuentes === [] ? 'N/A' : implode(', ', $fuentes);
+    }
+
     /** @param array<int, array{guia_id: int, num_guia: string}> $guias */
     private function publicarEvento(int $solicitudId, array $guias): void
     {
         $this->eventPublisher->publish(self::EVENTO_TIMBRADO_SOLICITADO, [
             'solicitud_id' => $solicitudId,
-            'guias' => array_map(
-                static fn (array $g): array => ['id' => $g['guia_id'], 'num_guia' => $g['num_guia']],
-                $guias,
-            ),
+            'guias' => $this->guiasParaWebSocket($guias),
         ]);
+    }
+
+    /**
+     * Enriquece `guia_id`/`num_guia` con la fila completa de `guias` para
+     * los eventos de WebSocket que alimentan el tablero de Tráfico en vivo
+     * — ver App\Liberacion\GuiaLookupRepository::buscarCompletoPorId(). Sin
+     * esto, trafico.js solo puede mover una tarjeta ya existente en
+     * pantalla, nunca crearla, así que una guía de una jornada anterior sin
+     * actividad al cargar la página queda invisible pese al evento.
+     *
+     * @param array<int, array{guia_id: int, num_guia: string}> $guias
+     * @return array<int, array<string, mixed>>
+     */
+    private function guiasParaWebSocket(array $guias): array
+    {
+        $completas = $this->guiaLookupRepository->buscarCompletoPorId(array_column($guias, 'guia_id'));
+
+        $porId = [];
+        foreach ($completas as $fila) {
+            $porId[(int) $fila['id']] = $fila;
+        }
+
+        $completasConDato = array_values(array_filter(array_map(
+            static fn (array $g): ?array => $porId[$g['guia_id']] ?? null,
+            $guias,
+        )));
+
+        $contenedores = $this->contenedorLookup->porNumGuia($completasConDato);
+
+        return array_map(
+            static fn (array $g): array => [...$g, 'contenedor' => $contenedores[$g['num_guia']] ?? ''],
+            $completasConDato,
+        );
+    }
+
+    /**
+     * Rutas agrupadas (origen/destino + contenedor/cliente por guía,
+     * resolviendo primero `source`, ya que estas filas vienen de
+     * `solicitud_timbrado_detalle` sin esa columna) — usado por los
+     * mensajes de Mattermost de aprobar()/rechazar(), que a diferencia de
+     * crear() no reciben `source` en el payload original.
+     *
+     * @param array<int, array{guia_id: int, num_guia: string}> $guias
+     * @return array<int, array{origen: string, destino: string, guias: array<int, array{guia_id: ?int, num_guia: string, contenedor: string, cliente: string}>}>
+     */
+    private function rutasParaEvento(array $guias): array
+    {
+        $guiasConSource = $this->conSource($guias);
+        $contenedores = $this->contenedorLookup->porNumGuia($guiasConSource);
+        $clientes = $this->clienteLookup->porNumGuia($guiasConSource);
+
+        return $this->aplicarDatos($this->rutaLookup->agruparPorRuta($guiasConSource), $contenedores, $clientes);
     }
 }

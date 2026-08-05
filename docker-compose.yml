@@ -19,6 +19,11 @@ services:
     restart: unless-stopped
     volumes:
       - ./:/var/www/html
+      # Misma carpeta OUT que atlas-monitoring (ver
+      # App\Monitoring\Timbrado\StampingEvidenceSource) — aquí de solo
+      # lectura para que public/api/timbrado-carta-porte.php pueda servir
+      # el PDF del Complemento Carta Porte ya timbrado.
+      - ${SICRET_TIMBRADO_OUT_HOST_PATH:-./storage/timbrado-out}:/timbrado-out:ro
     env_file:
       - .env
     depends_on:
@@ -83,6 +88,21 @@ services:
       # En producción esto se mapea a la carpeta/recurso de red real donde
       # el cliente legacy de SICRET escribe el XML/PDF.
       - ${SICRET_TIMBRADO_OUT_HOST_PATH:-./storage/timbrado-out}:/timbrado-out:ro
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - websocket
+
+  daily-cutover:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    container_name: atlas-daily-cutover
+    command: php bin/daily-cutover-engine.php
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
     env_file:
       - .env
     depends_on:

@@ -10,6 +10,7 @@ final class SolicitudTimbradoPayload
     private function __construct(
         public readonly array $numGuias,
         public readonly ?string $solicitante,
+        public readonly ?string $source,
     ) {
     }
 
@@ -64,6 +65,12 @@ final class SolicitudTimbradoPayload
             ? trim($data['solicitante'])
             : null;
 
-        return new self($numGuias, $solicitante);
+        // Opcional a propósito (retrocompatible) — ver el mismo campo en
+        // SolicitudLiberacionPayload::fromArray().
+        $source = is_string($data['source'] ?? null) && trim($data['source']) !== ''
+            ? trim($data['source'])
+            : null;
+
+        return new self($numGuias, $solicitante, $source);
     }
 }

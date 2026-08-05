@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Monitoring\Timbrado;
 
 use App\Domain\Events\GuideStamped;
+use App\Liberacion\GuiaEstadoTableroRepository;
 use App\Liberacion\GuiaLookupRepository;
 use App\Monitoring\Evidence\Evidence;
 use App\Monitoring\EvidenceWatcher;
@@ -42,6 +43,7 @@ final class TimbradoConfirmationWatcher extends EvidenceWatcher
         private readonly SolicitudTimbradoRepository $solicitudRepository,
         private readonly SolicitudTimbradoDetalleRepository $detalleRepository,
         private readonly GuiaLookupRepository $guiaLookupRepository,
+        private readonly GuiaEstadoTableroRepository $guiaEstadoTableroRepository,
         private readonly SolicitudTimbradoHistorialRepository $historialRepository,
         private readonly StampingEvidenceSource $evidenceSource,
         private readonly EventPublisher $eventPublisher,
@@ -94,9 +96,18 @@ final class TimbradoConfirmationWatcher extends EvidenceWatcher
             detalle: null,
         );
 
-        /** @var array{guias: array<int, array{guia_id: int, num_guia: string, factura_impresa: string}>} $dato */
+        /** @var array{guias: array<int, array{guia_id: int, num_guia: string, factura_impresa: string, usuario: ?string}>} $dato */
         $dato = $evidencia->dato();
         $guias = $dato['guias'];
+
+        foreach ($guias as $guia) {
+            $this->guiaEstadoTableroRepository->marcarEstado($guia['guia_id'], GuiaEstadoTableroRepository::ESTADO_TIMBRADO);
+        }
+
+        $this->detalleRepository->marcarFacturaImpresa($solicitudId, array_map(
+            static fn (array $g): array => ['guia_id' => $g['guia_id'], 'factura_impresa' => $g['factura_impresa']],
+            $guias,
+        ));
 
         $this->eventPublisher->publish(self::EVENTO_COMPLETADO, [
             'solicitud_id' => $solicitudId,
@@ -116,13 +127,36 @@ final class TimbradoConfirmationWatcher extends EvidenceWatcher
         ]);
 
         if ($this->dispatcher) {
+            $sourcePorGuiaId = array_column($item['guias'], 'source', 'guia_id');
+
             foreach ($guias as $guia) {
+                $usuario = $guia['usuario'] ?? $this->resolverUsuarioAprobador($solicitudId);
+
                 $this->dispatcher->dispatch(new GuideStamped($guia['num_guia'], [
                     'solicitud_id' => $solicitudId,
                     'factura_impresa' => $guia['factura_impresa'],
+                    'empresa' => $sourcePorGuiaId[$guia['guia_id']] ?? null,
+                    'usuario' => $usuario,
                 ]));
             }
         }
+    }
+
+    /**
+     * Devuelve el actor del evento APROBADA de la bitácora si no se resolvió
+     * un usuario desde SICRET. Ya no se realiza fallback al evento CREADA (quien
+     * levantó la solicitud desde Tráfico), para evitar notificar erróneamente en
+     * Mattermost que quien solicitó el timbrado fue quien lo realizó/aprobó.
+     */
+    private function resolverUsuarioAprobador(int $solicitudId): ?string
+    {
+        foreach ($this->historialRepository->porSolicitud($solicitudId) as $evento) {
+            if ($evento['evento'] === 'APROBADA') {
+                return $evento['actor'];
+            }
+        }
+
+        return null;
     }
 
     /**

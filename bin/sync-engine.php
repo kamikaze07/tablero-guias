@@ -18,6 +18,7 @@ use App\Notifications\Dispatcher\NotificationDispatcher;
 use App\Notifications\Consumers\Mattermost\MattermostConsumer;
 use App\Notifications\Consumers\Mattermost\MattermostRouter;
 use App\Notifications\Consumers\Mattermost\MattermostClient;
+use App\Notifications\Consumers\Mattermost\MattermostHttpClient;
 use App\Notifications\Consumers\Mattermost\Templates\GuideCreatedTemplate;
 use App\Notifications\Consumers\Mattermost\Templates\TimbradoRequestedTemplate;
 use App\Notifications\Consumers\Mattermost\Templates\LiberacionRequestedTemplate;
@@ -51,13 +52,19 @@ $eventPublisher = new SocketEventPublisher(
     $logger,
 );
 
-$mattermostClient = new class implements MattermostClient {
-    public function sendMessage(string $channel, string $message): void {
-        error_log("Mattermost [{$channel}]: \n{$message}");
-    }
-};
+$webhookUrl = $config->get('MATTERMOST_WEBHOOK', '');
+$botUsername = $config->get('MATTERMOST_BOT_USERNAME', 'ATLAS');
+$baseUrl = $config->get('MATTERMOST_URL', '');
+$token = $config->get('MATTERMOST_TOKEN', '');
+$team = $config->get('MATTERMOST_TEAM', '');
 
-$router = new MattermostRouter();
+$chAnuncios = $config->get('MATTERMOST_CHANNEL_ANUNCIOS', 'anuncios');
+$chTrafico = $config->get('MATTERMOST_CHANNEL_TRAFICO', 'trafico');
+$chFacturacion = $config->get('MATTERMOST_CHANNEL_FACTURACION', 'facturacion');
+$chTimbresFiscales = $config->get('MATTERMOST_CHANNEL_TIMBRES_FISCALES', 'timbres-fiscales');
+
+$mattermostClient = new MattermostHttpClient($webhookUrl, $botUsername, $baseUrl, $token, $team);
+$router = new MattermostRouter($chAnuncios, $chTrafico, $chFacturacion, $chTimbresFiscales);
 $mattermostConsumer = new MattermostConsumer($router, $mattermostClient);
 $mattermostConsumer->registerTemplate(new GuideCreatedTemplate());
 $mattermostConsumer->registerTemplate(new TimbradoRequestedTemplate());

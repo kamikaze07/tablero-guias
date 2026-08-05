@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Liberacion;
 
+use App\Dashboard\BusinessDay;
 use PDO;
 
 final class SolicitudLiberacionRepository
@@ -105,15 +106,24 @@ final class SolicitudLiberacionRepository
      */
     public function kpis(): array
     {
-        $stmt = $this->connection->query(
+        $dia = BusinessDay::containing(new \DateTimeImmutable());
+
+        $stmt = $this->connection->prepare(
             "SELECT
                 SUM(estado = 'PENDIENTE') AS pendientes,
-                SUM(estado IN ('APROBADA', 'EJECUTANDO', 'COMPLETADA', 'ERROR') AND DATE(resolved_at) = CURDATE()) AS aprobadas_hoy,
-                SUM(estado = 'RECHAZADA' AND DATE(resolved_at) = CURDATE()) AS rechazadas_hoy,
+                SUM(estado IN ('APROBADA', 'EJECUTANDO', 'COMPLETADA', 'ERROR') AND resolved_at >= :desde_aprob AND resolved_at < :hasta_aprob) AS aprobadas_hoy,
+                SUM(estado = 'RECHAZADA' AND resolved_at >= :desde_rech AND resolved_at < :hasta_rech) AS rechazadas_hoy,
                 (SELECT AVG(TIMESTAMPDIFF(MINUTE, created_at, NOW()))
                    FROM solicitud_liberacion WHERE estado = 'PENDIENTE') AS tiempo_promedio_espera_minutos
              FROM solicitud_liberacion"
         );
+
+        $stmt->execute([
+            'desde_aprob' => $dia->desde,
+            'hasta_aprob' => $dia->hasta,
+            'desde_rech' => $dia->desde,
+            'hasta_rech' => $dia->hasta,
+        ]);
 
         $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
@@ -122,6 +132,41 @@ final class SolicitudLiberacionRepository
             'aprobadas_hoy' => (int) ($row['aprobadas_hoy'] ?? 0),
             'rechazadas_hoy' => (int) ($row['rechazadas_hoy'] ?? 0),
             'tiempo_promedio_espera_minutos' => round((float) ($row['tiempo_promedio_espera_minutos'] ?? 0), 1),
+        ];
+    }
+
+    /**
+     * Guías resueltas por Liberación dentro de una ventana [desde, hasta) —
+     * usado por el resumen diario (App\Dashboard\DailyCutoverEngine) y por
+     * el KPI en vivo del tablero de Tráfico. Cuenta guías, no solicitudes:
+     * una solicitud puede cubrir varias guías a la vez (por lote), y cada
+     * una cuenta como un resultado individual — de ahí el JOIN contra
+     * solicitud_liberacion_detalle en vez de un COUNT(*) sobre la cabecera.
+     *
+     * @return array{aprobadas: int, rechazadas: int}
+     */
+    public function contarResueltasEnVentana(string $desde, string $hasta): array
+    {
+        $stmt = $this->connection->prepare(
+            "SELECT
+                SUM(sl.estado IN ('APROBADA', 'EJECUTANDO', 'COMPLETADA', 'ERROR') AND sl.resolved_at >= :desde_aprob AND sl.resolved_at < :hasta_aprob) AS aprobadas,
+                SUM(sl.estado = 'RECHAZADA' AND sl.resolved_at >= :desde_rech AND sl.resolved_at < :hasta_rech) AS rechazadas
+             FROM solicitud_liberacion_detalle d
+             JOIN solicitud_liberacion sl ON sl.id = d.solicitud_id"
+        );
+
+        $stmt->execute([
+            'desde_aprob' => $desde,
+            'hasta_aprob' => $hasta,
+            'desde_rech' => $desde,
+            'hasta_rech' => $hasta,
+        ]);
+
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        return [
+            'aprobadas' => (int) ($row['aprobadas'] ?? 0),
+            'rechazadas' => (int) ($row['rechazadas'] ?? 0),
         ];
     }
 

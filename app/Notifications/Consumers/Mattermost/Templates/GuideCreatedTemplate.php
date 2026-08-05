@@ -14,6 +14,15 @@ class GuideCreatedTemplate implements MattermostTemplate
     public function render(DomainEvent $event): string
     {
         /** @var GuideCreated $event */
-        return sprintf("🆕 **Nueva Guía Creada**\n- Guía ID: %s\n- Fecha: %s", $event->guiaId, $event->getOccurredOn()->format('Y-m-d H:i:s'));
+        $pr = $event->guiaId;
+        $empresa = EmpresaLabel::desde($event->data['empresa'] ?? null);
+        $usuario = $event->data['usuario'] ?? 'Sistema';
+        $fecha = $event->getOccurredOn()->format('d/m/Y');
+        $hora = $event->getOccurredOn()->format('H:i:s');
+
+        return sprintf(
+            "🆕 **NUEVA GUÍA CREADA**\n\n**PR:**\n%s\n\n**Empresa:**\n%s\n\n**Creada por:**\n%s\n\n**Fecha:**\n%s\n\n**Hora:**\n%s",
+            $pr, $empresa, $usuario, $fecha, $hora
+        );
     }
 }

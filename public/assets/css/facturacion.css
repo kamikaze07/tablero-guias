@@ -17,6 +17,30 @@
 .kpi-card--tiempo { border-left-color: var(--c-tiempo); }
 .kpi-card--tiempo .kpi-card__icon { color: var(--c-tiempo); }
 
+/* Selector Trabajo pendiente / Historial completo */
+
+.view-tabs {
+    flex: 0 0 auto;
+    display: flex;
+    gap: .5rem;
+    padding: 0 1.5rem .75rem;
+}
+
+/* Board de Historial: dos columnas de tabla, sin panel de actividad (no
+   aplica a datos ya resueltos) — a diferencia de .board--facturacion. */
+.board--historial {
+    grid-template-columns: 1fr 1fr;
+}
+
+.hist-pager {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: .85rem;
+}
+
 /* Filtros */
 
 .filters-bar {
@@ -48,19 +72,31 @@
     box-shadow: 0 0 0 .2rem rgba(47, 129, 247, .25);
 }
 
-/* Board de Facturación: dos columnas de tabla + actividad */
+/* Board de Facturación: solo las dos columnas de Solicitudes (Timbrado y
+   Liberación) — sin panel de Actividad Reciente, ocupan todo el ancho.
+   Liberación requiere mayor proporción del ancho (57% vs 43%) debido a
+   que cuenta con más columnas (11 vs 9), incluyendo Motivo y Detalle. */
 
 .board--facturacion {
-    grid-template-columns: 2fr 1.4fr 300px;
+    grid-template-columns: 43fr 57fr;
 }
 
 .board-column__body--table {
     flex: 1 1 auto;
     overflow-y: auto;
+    overflow-x: hidden;
     min-height: 0;
 }
 
+/* table-layout: fixed obliga a que la tabla nunca sea más ancha que su
+   columna del board — sin esto, con 9-11 columnas el navegador expandía
+   la tabla más allá del contenedor y el scroll horizontal (que en una
+   pantalla fija nadie puede accionar) dejaba columnas completas fuera de
+   vista. Los anchos por columna vienen de los bloques
+   .board-column--solicitudes(-timbrado) más abajo. */
 .board-column__body--table table {
+    table-layout: fixed;
+    width: 100%;
     margin-bottom: 0;
 }
 
@@ -82,6 +118,64 @@
     vertical-align: middle;
 }
 
+/* Paneles de Solicitudes (Timbrado/Liberación): filas más altas y fuente
+   ajustada para legibilidad y balance entre columnas — son los paneles
+   que Facturación mira para decidir autorizar o rechazar, priorizando PR
+   y Contenedor por encima del nombre de quien solicita (ver
+   celdaOperadorConSolicitante() en facturacion.js). Menos filas visibles
+   a la vez es el trade-off aceptado (ver PANEL_SOLICITUDES_PER_PAGE). */
+.board-column__body--table-solicitudes thead th {
+    font-size: .75rem;
+    padding-left: .4rem;
+    padding-right: .4rem;
+    white-space: nowrap;
+}
+
+.board-column__body--table-solicitudes td {
+    font-size: .88rem;
+    padding: .85rem .4rem;
+}
+
+.board-column__body--table-solicitudes td strong {
+    font-size: .95rem;
+}
+
+/* Solo Solicitudes de Timbrado, aprox al doble de alto que Liberación —
+   pedido explícito aunque quepan menos filas en pantalla a la vez. */
+.board-column--solicitudes-timbrado .board-column__body--table-solicitudes td {
+    padding-top: 1.7rem;
+    padding-bottom: 1.7rem;
+}
+
+/* Anchos por columna (suman 100%) para las dos tablas "en vivo" — evita
+   que columnas angostas (Estado, Esperando) empujen a las anchas
+   (Cliente, Ruta, Operador) fuera del ancho disponible. Guía/Contenedor/
+   Cliente/Ruta/Operador/Empresa/Fecha/Estado/Esperando en ese orden. */
+.board-column--solicitudes-timbrado table th:nth-child(1) { width: 11%; }
+.board-column--solicitudes-timbrado table th:nth-child(2) { width: 9%; }
+.board-column--solicitudes-timbrado table th:nth-child(3) { width: 14%; }
+.board-column--solicitudes-timbrado table th:nth-child(4) { width: 16%; }
+.board-column--solicitudes-timbrado table th:nth-child(5) { width: 16%; }
+.board-column--solicitudes-timbrado table th:nth-child(6) { width: 8%; }
+.board-column--solicitudes-timbrado table th:nth-child(7) { width: 12%; }
+.board-column--solicitudes-timbrado table th:nth-child(8) { width: 8%; }
+.board-column--solicitudes-timbrado table th:nth-child(9) { width: 6%; }
+
+/* Igual que arriba, pero para la tabla de Liberación (11 columnas: suma
+   Motivo y Detalle además de Guía/Contenedor/Cliente/Ruta/Operador/
+   Empresa/Fecha/Estado/Esperando). */
+.board-column--solicitudes table th:nth-child(1) { width: 9%; }
+.board-column--solicitudes table th:nth-child(2) { width: 7%; }
+.board-column--solicitudes table th:nth-child(3) { width: 11%; }
+.board-column--solicitudes table th:nth-child(4) { width: 13%; }
+.board-column--solicitudes table th:nth-child(5) { width: 13%; }
+.board-column--solicitudes table th:nth-child(6) { width: 6%; }
+.board-column--solicitudes table th:nth-child(7) { width: 9%; }
+.board-column--solicitudes table th:nth-child(8) { width: 11%; }
+.board-column--solicitudes table th:nth-child(9) { width: 7%; }
+.board-column--solicitudes table th:nth-child(10) { width: 7%; }
+.board-column--solicitudes table th:nth-child(11) { width: 7%; }
+
 .board-column__note {
     flex: 0 0 auto;
     display: flex;
@@ -99,16 +193,39 @@
 }
 
 .motivo-col {
-    max-width: 220px;
+    max-width: 100%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.acciones-col {
-    display: flex;
-    gap: .35rem;
+/* Cliente/Ruta (Origen → Destino, ver App\Liberacion\ClienteLookup /
+   App\Timbrado\RutaLookup): nombres reales de SICRET, a veces largos —
+   se truncan igual que .motivo-col y muestran el texto completo en el
+   title al pasar el cursor. max-width: 100% (no un px fijo) para que el
+   truncado respete siempre el ancho real de la columna (ver
+   table-layout: fixed en .board-column__body--table table) y el texto
+   nunca se salga de su celda hacia la columna vecina. */
+.ruta-cliente-col {
+    display: inline-block;
+    max-width: 100%;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
+
+/* Operador con solicitante: evita que nombres extensos desborden la celda
+   o generen múltiples saltos de línea innecesarios. */
+.operador-col {
+    max-width: 100%;
+}
+
+.operador-nombre,
+.operador-solicito {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Prioridad visual por tiempo de espera */
@@ -122,10 +239,61 @@ tr.espera-critica {
     background: rgba(239, 68, 68, .06);
 }
 
+/* Letrero de solicitudes desatendidas — ver evaluarAlertaDesatendidas()
+   en facturacion.js. Pulsante a propósito (además del sonido que se
+   repite cada 10s): la idea es que sea difícil de ignorar. */
+.alerta-desatendidas {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .6rem 1.5rem;
+    font-weight: 600;
+    font-size: .95rem;
+    color: #fff;
+    background: var(--c-error);
+    animation: alerta-desatendidas-pulso 1.2s ease-in-out infinite;
+}
+
+.alerta-desatendidas.is-hidden {
+    display: none;
+}
+
+.alerta-desatendidas i {
+    font-size: 1.1rem;
+}
+
+@keyframes alerta-desatendidas-pulso {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .7; }
+}
+
 /* trafico.css oculta .board-column__empty por defecto y solo la muestra
    vía .board-column__body.is-empty (un ancestro distinto al propio
    elemento) — aquí el estado vacío se controla directamente sobre el
    elemento, así que se necesita su propio modificador. */
 .board-column__empty.is-visible {
     display: flex !important;
+}
+
+/* Adaptaciones responsive para mantener todas las columnas visibles y legibles en distintas resoluciones */
+@media (max-width: 1550px) {
+    .board-column__body--table-solicitudes td {
+        font-size: .83rem;
+        padding-left: .25rem;
+        padding-right: .25rem;
+    }
+
+    .board-column__body--table-solicitudes thead th {
+        font-size: .72rem;
+        padding-left: .25rem;
+        padding-right: .25rem;
+    }
+}
+
+@media (max-width: 1250px) {
+    .board--facturacion,
+    .board--historial {
+        grid-template-columns: 1fr;
+    }
 }

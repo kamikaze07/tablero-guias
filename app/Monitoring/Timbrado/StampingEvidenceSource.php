@@ -103,18 +103,40 @@ final class StampingEvidenceSource implements EvidenceSource
             // Condición 2: el XML todavía no existe. Posible condición de
             // carrera (SICRET escribe factImpresa antes que el XML) — nunca
             // se trata como fallo, solo se reintenta en el siguiente ciclo.
-            if (!is_file($this->rutaXml($facturaImpresa))) {
+            $rutaXml = $this->rutaXml($facturaImpresa);
+            clearstatcache(true, $rutaXml);
+            if (!is_file($rutaXml)) {
                 return Evidence::pendiente();
             }
+
+            $usuario = $this->consultarUsuarioFactura($source, $facturaImpresa, $guia['num_guia']);
 
             $confirmadas[] = [
                 'guia_id' => $guia['guia_id'],
                 'num_guia' => $guia['num_guia'],
                 'factura_impresa' => $facturaImpresa,
+                'usuario' => $usuario,
             ];
         }
 
         return Evidence::confirmada(['guias' => $confirmadas]);
+    }
+
+    private function consultarUsuarioFactura(\App\Sync\Source $source, string $facturaImpresa, string $numGuia): ?string
+    {
+        $stmt = $source->connection()->prepare(
+            'SELECT usuario FROM facturas33 WHERE folio = :folio LIMIT 1'
+        );
+        $stmt->execute(['folio' => $facturaImpresa]);
+        $usuario = $stmt->fetchColumn();
+
+        if ($usuario === false) {
+            return null;
+        }
+
+        $usuario = trim((string) $usuario);
+
+        return $usuario === '' ? null : $usuario;
     }
 
     private function rutaXml(string $facturaImpresa): string

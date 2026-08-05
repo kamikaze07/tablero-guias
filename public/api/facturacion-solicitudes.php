@@ -6,6 +6,8 @@ require __DIR__ . '/../../vendor/autoload.php';
 
 use App\Config\Config;
 use App\Database\ConnectionFactory;
+use App\Liberacion\ClienteLookup;
+use App\Liberacion\ContenedorLookup;
 use App\Liberacion\GuiaEstadoTableroRepository;
 use App\Liberacion\GuiaLookupRepository;
 use App\Liberacion\JsonResponse;
@@ -14,7 +16,9 @@ use App\Liberacion\SolicitudLiberacionHistorialRepository;
 use App\Liberacion\SolicitudLiberacionRepository;
 use App\Liberacion\SolicitudLiberacionService;
 use App\Sync\SocketEventPublisher;
+use App\Sync\SourceRegistry;
 use App\Sync\SyncLogger;
+use App\Timbrado\RutaLookup;
 
 header('Content-Type: application/json');
 
@@ -36,9 +40,17 @@ $eventPublisher = new SocketEventPublisher(
     $logger,
 );
 
+$sourceRegistry = new SourceRegistry($config, new ConnectionFactory(), __DIR__ . '/../../config/sources.php');
+$contenedorLookup = new ContenedorLookup($sourceRegistry, $logger);
+$rutaLookup = new RutaLookup($sourceRegistry, $logger);
+$clienteLookup = new ClienteLookup($sourceRegistry, $logger);
+
 $service = new SolicitudLiberacionService(
     $connection,
     new GuiaLookupRepository($connection),
+    $contenedorLookup,
+    $rutaLookup,
+    $clienteLookup,
     new GuiaEstadoTableroRepository($connection),
     new SolicitudLiberacionRepository($connection),
     new SolicitudLiberacionDetalleRepository($connection),

@@ -5,7 +5,10 @@ declare(strict_types=1);
 require __DIR__ . '/../../vendor/autoload.php';
 
 use App\Config\Config;
+use App\Dashboard\FacturacionResumenKpis;
 use App\Database\ConnectionFactory;
+use App\Liberacion\ClienteLookup;
+use App\Liberacion\ContenedorLookup;
 use App\Liberacion\GuiaEstadoTableroRepository;
 use App\Liberacion\GuiaLookupRepository;
 use App\Liberacion\JsonResponse;
@@ -14,8 +17,10 @@ use App\Liberacion\SolicitudLiberacionHistorialRepository;
 use App\Liberacion\SolicitudLiberacionRepository;
 use App\Liberacion\SolicitudLiberacionService;
 use App\Sync\SocketEventPublisher;
+use App\Sync\SourceRegistry;
 use App\Sync\SyncLogger;
 
+use App\Timbrado\RutaLookup;
 use App\Timbrado\SolicitudTimbradoRepository;
 use App\Timbrado\SolicitudTimbradoDetalleRepository;
 use App\Timbrado\SolicitudTimbradoHistorialRepository;
@@ -48,9 +53,17 @@ try {
         $logger,
     );
 
+    $sourceRegistry = new SourceRegistry($config, new ConnectionFactory(), __DIR__ . '/../../config/sources.php');
+    $contenedorLookup = new ContenedorLookup($sourceRegistry, $logger);
+    $rutaLookup = new RutaLookup($sourceRegistry, $logger);
+    $clienteLookup = new ClienteLookup($sourceRegistry, $logger);
+
     $liberacionService = new SolicitudLiberacionService(
         $connection,
         new GuiaLookupRepository($connection),
+        $contenedorLookup,
+        $rutaLookup,
+        $clienteLookup,
         new GuiaEstadoTableroRepository($connection),
         new SolicitudLiberacionRepository($connection),
         new SolicitudLiberacionDetalleRepository($connection),
@@ -58,10 +71,13 @@ try {
         $eventPublisher,
         $logger,
     );
-    
+
     $timbradoService = new SolicitudTimbradoService(
         $connection,
         new GuiaLookupRepository($connection),
+        $rutaLookup,
+        $contenedorLookup,
+        $clienteLookup,
         new SolicitudTimbradoRepository($connection),
         new SolicitudTimbradoDetalleRepository($connection),
         new SolicitudTimbradoHistorialRepository($connection),
@@ -76,6 +92,7 @@ try {
         'liberacion' => $kpisLiberacion,
         'timbrado' => $kpisTimbrado,
         'guias_por_timbrar' => $kpisLiberacion['guias_por_timbrar'] ?? 0,
+        'resumen' => FacturacionResumenKpis::combinar($kpisLiberacion, $kpisTimbrado),
     ]);
 } catch (\Throwable $e) {
     $logger->error('Error inesperado en facturacion-kpis.php', ['error' => $e->getMessage()]);

@@ -6,10 +6,14 @@ require __DIR__ . '/../../vendor/autoload.php';
 
 use App\Config\Config;
 use App\Database\ConnectionFactory;
+use App\Liberacion\ClienteLookup;
+use App\Liberacion\ContenedorLookup;
 use App\Liberacion\GuiaLookupRepository;
 use App\Liberacion\JsonResponse;
 use App\Sync\SocketEventPublisher;
+use App\Sync\SourceRegistry;
 use App\Sync\SyncLogger;
+use App\Timbrado\RutaLookup;
 use App\Timbrado\SolicitudTimbradoDetalleRepository;
 use App\Timbrado\SolicitudTimbradoHistorialRepository;
 use App\Timbrado\SolicitudTimbradoPayload;
@@ -19,9 +23,12 @@ use App\Timbrado\SolicitudTimbradoValidationException;
 use App\Notifications\Dispatcher\NotificationDispatcher;
 use App\Notifications\Consumers\Mattermost\MattermostConsumer;
 use App\Notifications\Consumers\Mattermost\MattermostRouter;
-use App\Notifications\Consumers\Mattermost\MattermostClient;
+use App\Notifications\Consumers\Mattermost\MattermostHttpClient;
 use App\Notifications\Consumers\Mattermost\Templates\GuideCreatedTemplate;
 use App\Notifications\Consumers\Mattermost\Templates\TimbradoRequestedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\TimbradoApprovedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\TimbradoConcludedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\TimbradoRejectedTemplate;
 use App\Notifications\Consumers\Mattermost\Templates\LiberacionRequestedTemplate;
 use App\Notifications\Consumers\Mattermost\Templates\LiberacionApprovedTemplate;
 use App\Notifications\Consumers\Mattermost\Templates\LiberacionRejectedTemplate;
@@ -42,22 +49,41 @@ $connection = (new ConnectionFactory())->make([
 
 $logger = new SyncLogger(__DIR__ . '/../../storage/logs/api.log');
 
+$sourceRegistry = new SourceRegistry(
+    $config,
+    new ConnectionFactory(),
+    __DIR__ . '/../../config/sources.php',
+);
+$rutaLookup = new RutaLookup($sourceRegistry, $logger);
+$contenedorLookup = new ContenedorLookup($sourceRegistry, $logger);
+$clienteLookup = new ClienteLookup($sourceRegistry, $logger);
+
 $eventPublisher = new SocketEventPublisher(
     $config->get('WEBSOCKET_INTERNAL_HOST', 'websocket'),
     (int) $config->get('WEBSOCKET_PUBLISH_PORT', '8099'),
     $logger,
 );
 
-$mattermostClient = new class implements MattermostClient {
-    public function sendMessage(string $channel, string $message): void {
-        error_log("Mattermost [{$channel}]: \n{$message}");
-    }
-};
+$mattermostClient = new MattermostHttpClient(
+    $config->get('MATTERMOST_WEBHOOK', ''),
+    $config->get('MATTERMOST_BOT_USERNAME', 'ATLAS'),
+    $config->get('MATTERMOST_URL', ''),
+    $config->get('MATTERMOST_TOKEN', ''),
+    $config->get('MATTERMOST_TEAM', ''),
+);
 
-$router = new MattermostRouter();
+$router = new MattermostRouter(
+    $config->get('MATTERMOST_CHANNEL_ANUNCIOS', 'anuncios'),
+    $config->get('MATTERMOST_CHANNEL_TRAFICO', 'trafico'),
+    $config->get('MATTERMOST_CHANNEL_FACTURACION', 'facturacion'),
+    $config->get('MATTERMOST_CHANNEL_TIMBRES_FISCALES', 'timbres-fiscales'),
+);
 $mattermostConsumer = new MattermostConsumer($router, $mattermostClient);
 $mattermostConsumer->registerTemplate(new GuideCreatedTemplate());
 $mattermostConsumer->registerTemplate(new TimbradoRequestedTemplate());
+$mattermostConsumer->registerTemplate(new TimbradoApprovedTemplate());
+$mattermostConsumer->registerTemplate(new TimbradoConcludedTemplate());
+$mattermostConsumer->registerTemplate(new TimbradoRejectedTemplate());
 $mattermostConsumer->registerTemplate(new LiberacionRequestedTemplate());
 $mattermostConsumer->registerTemplate(new LiberacionApprovedTemplate());
 $mattermostConsumer->registerTemplate(new LiberacionRejectedTemplate());
@@ -70,6 +96,9 @@ $dispatcher->registerConsumer($mattermostConsumer);
 $service = new SolicitudTimbradoService(
     $connection,
     new GuiaLookupRepository($connection),
+    $rutaLookup,
+    $contenedorLookup,
+    $clienteLookup,
     new SolicitudTimbradoRepository($connection),
     new SolicitudTimbradoDetalleRepository($connection),
     new SolicitudTimbradoHistorialRepository($connection),

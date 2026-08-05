@@ -200,4 +200,110 @@ final class PdoSicretGateway implements SicretGateway
             'error' => $error,
         ]);
     }
+
+    public function completarDatosFiscales(
+        string $source,
+        string $numGuia,
+        string $folio,
+        string $folioFiscal,
+        ?string $idCcp,
+    ): bool {
+        $sourceObj = $this->buscarFuente($source);
+
+        if ($sourceObj === null) {
+            $exception = new \RuntimeException("Fuente de escritura no encontrada: {$source}");
+            $this->logErrorFiscal($source, $numGuia, $exception->getMessage());
+            throw $exception;
+        }
+
+        try {
+            return $this->ejecutarCompletarDatosFiscales($sourceObj, $source, $numGuia, $folio, $folioFiscal, $idCcp);
+        } catch (PDOException $e) {
+            if (!$this->isConnectionLost($e)) {
+                throw $e;
+            }
+
+            $this->logger->error('Conexión de escritura perdida con SICRET, reconectando', [
+                'source' => $source,
+                'error' => $e->getMessage(),
+            ]);
+
+            $sourceObj->reconnect();
+
+            return $this->ejecutarCompletarDatosFiscales($sourceObj, $source, $numGuia, $folio, $folioFiscal, $idCcp);
+        }
+    }
+
+    private function ejecutarCompletarDatosFiscales(
+        Source $sourceObj,
+        string $source,
+        string $numGuia,
+        string $folio,
+        string $folioFiscal,
+        ?string $idCcp,
+    ): bool {
+        $pdo = $sourceObj->connection();
+
+        try {
+            // Filtro `folioFiscal = '' OR folioFiscal IS NULL` a propósito:
+            // nunca pisa un valor ya capturado (a mano o por este mismo
+            // watcher en un ciclo anterior que se adelantó).
+            $stmt = $pdo->prepare(
+                "UPDATE facturas33
+                 SET folioFiscal = :folio_fiscal, idccp = :idccp
+                 WHERE folio = :folio AND cartaporte = :num_guia
+                   AND (folioFiscal = '' OR folioFiscal IS NULL)"
+            );
+            $stmt->execute([
+                'folio_fiscal' => $folioFiscal,
+                'idccp' => $idCcp,
+                'folio' => $folio,
+                'num_guia' => $numGuia,
+            ]);
+
+            $actualizado = $stmt->rowCount() > 0;
+
+            $this->writeLog->registrar(
+                operacion: 'completar_datos_fiscales',
+                source: $source,
+                numGuia: $numGuia,
+                resultado: $actualizado ? 'exito' : 'sin_cambios',
+                detalle: $actualizado
+                    ? "folio={$folio} folioFiscal={$folioFiscal} idccp=" . ($idCcp ?? 'N/A')
+                    : "folio={$folio}: no se encontró la fila o ya tenía folioFiscal",
+            );
+
+            if ($actualizado) {
+                $this->logger->info('Datos fiscales completados en SICRET', [
+                    'source' => $source,
+                    'num_guia' => $numGuia,
+                    'folio' => $folio,
+                ]);
+            }
+
+            return $actualizado;
+        } catch (\Throwable $e) {
+            $this->logErrorFiscal($source, $numGuia, $e->getMessage());
+
+            throw $e;
+        }
+    }
+
+    private function logErrorFiscal(string $source, string $numGuia, string $error): void
+    {
+        $this->writeLog->registrar(
+            operacion: 'completar_datos_fiscales',
+            source: $source,
+            numGuia: $numGuia,
+            resultado: 'error',
+            detalle: $error,
+        );
+
+        $this->logger->error('Error al completar datos fiscales en SICRET', [
+            'operacion' => 'completar_datos_fiscales',
+            'source' => $source,
+            'num_guia' => $numGuia,
+            'error' => $error,
+        ]);
+    }
 }

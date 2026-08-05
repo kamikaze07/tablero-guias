@@ -66,4 +66,34 @@ final class GuiaLookupRepository
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
+
+    /**
+     * Fila completa de `guias` (mismas columnas que
+     * App\Dashboard\GuiaBoardRepository usa para pintar una tarjeta) a
+     * partir de un lote de ids. Usado por los eventos de WebSocket de
+     * Liberación y Timbrado (`guia.*_solicitada`, `solicitud_*.aprobada`,
+     * `solicitud_*.rechazada`): sin estos campos, el tablero de Tráfico no
+     * puede crear la tarjeta cuando la guía es de una jornada anterior y
+     * no estaba ya en pantalla al momento del evento (solo podía moverla,
+     * ver public/assets/js/trafico.js:moveCards()).
+     *
+     * @param int[] $guiaIds
+     * @return array<int, array{id: int, source: string, num_guia: string, fecha: string, nombre: string, tipo: string, servicio: string, placas1: string, estado: string, operador: ?string}>
+     */
+    public function buscarCompletoPorId(array $guiaIds): array
+    {
+        if ($guiaIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($guiaIds), '?'));
+
+        $stmt = $this->connection->prepare(
+            "SELECT id, source, num_guia, fecha, nombre, tipo, servicio, placas1, estado, operador
+             FROM guias WHERE id IN ({$placeholders})"
+        );
+        $stmt->execute(array_values($guiaIds));
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
 }

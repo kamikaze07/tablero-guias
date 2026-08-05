@@ -102,6 +102,7 @@ final class GuideWatcher implements Watcher
             $this->dispatcher->dispatch(new GuideCreated($record->numGuia, [
                 'id' => $atlasId,
                 'source' => $record->source,
+                'empresa' => $record->source,
                 'fecha' => $record->fecha->format('Y-m-d H:i:s'),
                 'estado' => $record->estado,
             ]));

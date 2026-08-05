@@ -85,9 +85,17 @@ CREATE TABLE IF NOT EXISTS sync_heartbeat (
 -- `guias.estado` replicado de SICRET. Creación perezosa: una guía sin fila
 -- aquí se interpreta como GENERADA (su estado por defecto), la fila solo
 -- se materializa en su primera transición.
+-- `factura_impresa`: únicamente para guías confirmadas por
+-- App\Monitoring\Timbrado\DirectStampingWatcher (timbrado directo en SICRET
+-- sin Solicitud de Timbrado previa) — ahí no existe ningún `solicitud_id`
+-- donde guardar el valor (a diferencia de
+-- solicitud_timbrado_detalle.factura_impresa, que sí cuelga de una
+-- Solicitud real). public/api/timbrado-carta-porte.php cae aquí como
+-- segunda fuente cuando la guía no tiene fila en solicitud_timbrado_detalle.
 CREATE TABLE IF NOT EXISTS guia_estado_tablero (
     guia_id BIGINT UNSIGNED NOT NULL,
     estado VARCHAR(30) NOT NULL,
+    factura_impresa VARCHAR(20) NULL,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (guia_id),
     KEY idx_guia_estado_tablero_estado (estado)
@@ -126,10 +134,24 @@ CREATE TABLE IF NOT EXISTS solicitud_liberacion (
 -- materializada). `num_guia` se duplica únicamente por legibilidad en
 -- consultas manuales; la fuente de verdad sigue siendo `guias` vía
 -- guia_id.
+--
+-- `cfdi_nuevo_folio`/`folio_fiscal_nuevo`: caché write-once del CFDI que
+-- refactura esta guía tras liberarse, para el reporte "Guías Liberadas"
+-- (App\Reportes\GuiasLiberadasReportRepository). Antes se resolvían en cada
+-- carga del reporte correlacionando con `sicret_write_log` (y, si eso
+-- fallaba, contra `facturas33` en vivo vía RefacturacionSicretLookup) —
+-- ambos caminos son consultas repetidas para un dato que, una vez que un
+-- CFDI existe y tiene folio fiscal, ya no cambia nunca. Se llenan aquí la
+-- primera vez que se resuelven por cualquiera de esos dos caminos y nunca
+-- se vuelven a pisar (mismo criterio de "nunca sobrescribir un valor ya
+-- capturado" que `PdoSicretGateway::completarDatosFiscales()` usa en
+-- `facturas33` misma).
 CREATE TABLE IF NOT EXISTS solicitud_liberacion_detalle (
     solicitud_id BIGINT UNSIGNED NOT NULL,
     guia_id BIGINT UNSIGNED NOT NULL,
     num_guia VARCHAR(15) NOT NULL,
+    cfdi_nuevo_folio VARCHAR(20) NULL,
+    folio_fiscal_nuevo VARCHAR(40) NULL,
     PRIMARY KEY (solicitud_id, guia_id),
     KEY idx_solicitud_liberacion_detalle_guia (guia_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -185,6 +207,8 @@ CREATE TABLE IF NOT EXISTS solicitud_timbrado (
     origen VARCHAR(50) NOT NULL,
     solicitante VARCHAR(100) NULL,
     estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+    resolved_at DATETIME NULL,
+    resolved_by VARCHAR(50) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     KEY idx_solicitud_timbrado_estado (estado),
@@ -193,10 +217,20 @@ CREATE TABLE IF NOT EXISTS solicitud_timbrado (
 
 -- Guías que pertenecen a cada Solicitud de Timbrado (relación N a N
 -- materializada) — mismo diseño que solicitud_liberacion_detalle.
+--
+-- `factura_impresa`: valor de SICRET `guias.factImpresa` en el momento en
+-- que App\Monitoring\Timbrado\TimbradoConfirmationWatcher confirma el
+-- timbrado (ver StampingEvidenceSource) — se persiste aquí porque
+-- `guias.factimpresa` de ATLAS (App\Sync\GuiaRepository, INSERT-only) casi
+-- siempre queda vacío para este caso: la guía se sincroniza ANTES de
+-- timbrarse, así que su copia local nunca se actualiza después. Sin esta
+-- columna, sería imposible ubicar el Complemento Carta Porte de una guía
+-- ya timbrada sin volver a consultar SICRET en vivo.
 CREATE TABLE IF NOT EXISTS solicitud_timbrado_detalle (
     solicitud_id BIGINT UNSIGNED NOT NULL,
     guia_id BIGINT UNSIGNED NOT NULL,
     num_guia VARCHAR(15) NOT NULL,
+    factura_impresa VARCHAR(20) NULL,
     PRIMARY KEY (solicitud_id, guia_id),
     KEY idx_solicitud_timbrado_detalle_guia (guia_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -214,4 +248,20 @@ CREATE TABLE IF NOT EXISTS solicitud_timbrado_historial (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     KEY idx_solicitud_timbrado_historial_solicitud (solicitud_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Resumen diario de los tableros de Tráfico y Facturación: una fila por
+-- "día de negocio" (jornada 07:00 -> 06:59:59 del día siguiente, ver
+-- App\Dashboard\BusinessDay), escrita una sola vez por
+-- App\Dashboard\DailyCutoverEngine al cruzar el corte de las 07:00.
+-- `fecha` es la fecha calendario en la que arrancó la jornada resumida.
+CREATE TABLE IF NOT EXISTS resumen_diario_tablero (
+    fecha DATE NOT NULL,
+    guias_creadas INT UNSIGNED NOT NULL DEFAULT 0,
+    timbrado_aprobadas INT UNSIGNED NOT NULL DEFAULT 0,
+    timbrado_rechazadas INT UNSIGNED NOT NULL DEFAULT 0,
+    liberacion_aprobadas INT UNSIGNED NOT NULL DEFAULT 0,
+    liberacion_rechazadas INT UNSIGNED NOT NULL DEFAULT 0,
+    generado_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (fecha)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

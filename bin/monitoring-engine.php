@@ -17,12 +17,19 @@ use App\Liberacion\SolicitudLiberacionRepository;
 use App\Monitoring\Liberacion\LiberationConfirmationWatcher;
 use App\Monitoring\Liberacion\SicretStateEvidenceSource;
 use App\Monitoring\MonitoringEngine;
+use App\Monitoring\Timbrado\DirectStampingEvidenceSource;
+use App\Monitoring\Timbrado\DirectStampingWatcher;
+use App\Monitoring\Timbrado\FiscalDataEvidenceSource;
+use App\Monitoring\Timbrado\FiscalDataWatcher;
 use App\Monitoring\Timbrado\StampingEvidenceSource;
+use App\Monitoring\Timbrado\TimbradoConclusionEvidenceSource;
+use App\Monitoring\Timbrado\TimbradoConclusionWatcher;
 use App\Monitoring\Timbrado\TimbradoConfirmationWatcher;
-use App\Notifications\Consumers\Mattermost\MattermostClient;
 use App\Notifications\Consumers\Mattermost\MattermostConsumer;
+use App\Notifications\Consumers\Mattermost\MattermostHttpClient;
 use App\Notifications\Consumers\Mattermost\MattermostRouter;
 use App\Notifications\Consumers\Mattermost\Templates\GuideStampedTemplate;
+use App\Notifications\Consumers\Mattermost\Templates\TimbradoConcludedTemplate;
 use App\Notifications\Dispatcher\NotificationDispatcher;
 use App\Sync\HeartbeatStore;
 use App\Sync\SocketEventPublisher;
@@ -110,16 +117,27 @@ $liberationConfirmationWatcher = new LiberationConfirmationWatcher(
 // watchers de este motor — mismo patrón que public/api/solicitudes-*.php,
 // duplicado aquí porque este proceso (bin/monitoring-engine.php) corre
 // aparte de php-fpm y no comparte estado con las peticiones HTTP.
-$mattermostClient = new class implements MattermostClient {
-    public function sendMessage(string $channel, string $message): void
-    {
-        error_log("Mattermost [{$channel}]: \n{$message}");
-    }
-};
-$mattermostConsumer = new MattermostConsumer(new MattermostRouter(), $mattermostClient);
+$mattermostClient = new MattermostHttpClient(
+    $config->get('MATTERMOST_WEBHOOK', ''),
+    $config->get('MATTERMOST_BOT_USERNAME', 'ATLAS'),
+    $config->get('MATTERMOST_URL', ''),
+    $config->get('MATTERMOST_TOKEN', ''),
+    $config->get('MATTERMOST_TEAM', ''),
+);
+$router = new MattermostRouter(
+    $config->get('MATTERMOST_CHANNEL_ANUNCIOS', 'anuncios'),
+    $config->get('MATTERMOST_CHANNEL_TRAFICO', 'trafico'),
+    $config->get('MATTERMOST_CHANNEL_FACTURACION', 'facturacion'),
+    $config->get('MATTERMOST_CHANNEL_TIMBRES_FISCALES', 'timbres-fiscales'),
+);
+$mattermostConsumer = new MattermostConsumer($router, $mattermostClient);
 $mattermostConsumer->registerTemplate(new GuideStampedTemplate());
+$mattermostConsumer->registerTemplate(new TimbradoConcludedTemplate());
 $dispatcher = new NotificationDispatcher();
 $dispatcher->registerConsumer($mattermostConsumer);
+
+$solicitudTimbradoDetalleRepository = new SolicitudTimbradoDetalleRepository($atlasConnection);
+$sicretTimbradoOutPath = (string) $config->get('SICRET_TIMBRADO_OUT_PATH', '');
 
 // Puente TEMPORAL con el timbrado manual de SICRET — ver
 // App\Monitoring\Timbrado\TimbradoConfirmationWatcher y
@@ -128,14 +146,56 @@ $dispatcher->registerConsumer($mattermostConsumer);
 // tocar el resto de este archivo.
 $timbradoConfirmationWatcher = new TimbradoConfirmationWatcher(
     new SolicitudTimbradoRepository($atlasConnection),
-    new SolicitudTimbradoDetalleRepository($atlasConnection),
+    $solicitudTimbradoDetalleRepository,
     $guiaLookupRepository,
+    $guiaEstadoTableroRepository,
     new SolicitudTimbradoHistorialRepository($atlasConnection),
     new StampingEvidenceSource(
         $readSourceRegistry,
         $logger,
-        (string) $config->get('SICRET_TIMBRADO_OUT_PATH', ''),
+        $sicretTimbradoOutPath,
     ),
+    $eventPublisher,
+    $logger,
+    $dispatcher,
+);
+
+// Guías que Facturación timbra directo en SICRET sin que Tráfico levante
+// una Solicitud de Timbrado — ver App\Monitoring\Timbrado\DirectStampingWatcher.
+// Comparte $solicitudTimbradoDetalleRepository con el Watcher de arriba
+// únicamente para leer (pendientesTimbradoDirecto()), nunca para escribir
+// sobre la misma solicitud.
+$directStampingWatcher = new DirectStampingWatcher(
+    $solicitudTimbradoDetalleRepository,
+    $guiaEstadoTableroRepository,
+    new DirectStampingEvidenceSource(
+        $readSourceRegistry,
+        $logger,
+        $sicretTimbradoOutPath,
+    ),
+    $eventPublisher,
+    $logger,
+    $dispatcher,
+);
+
+// Backfill de folioFiscal/idccp en facturas33 — ver
+// App\Monitoring\Timbrado\FiscalDataWatcher. Independiente de los dos
+// watchers de arriba a propósito: lee `facturas33` directo en SICRET, no
+// necesita saber si la guía pasó por una Solicitud de Timbrado o se
+// timbró directo.
+$fiscalDataWatcher = new FiscalDataWatcher(
+    $readSourceRegistry,
+    new FiscalDataEvidenceSource($logger, $sicretTimbradoOutPath),
+    $sicretGateway,
+    $logger,
+);
+
+$timbradoConclusionWatcher = new TimbradoConclusionWatcher(
+    new SolicitudTimbradoRepository($atlasConnection),
+    $solicitudTimbradoDetalleRepository,
+    $guiaLookupRepository,
+    new SolicitudTimbradoHistorialRepository($atlasConnection),
+    new TimbradoConclusionEvidenceSource($readSourceRegistry, $logger),
     $eventPublisher,
     $logger,
     $dispatcher,
@@ -149,6 +209,9 @@ $watchers = [
     'liberacion-executor' => $liberacionExecutor,
     'liberacion-confirmacion' => $liberationConfirmationWatcher,
     'timbrado-confirmacion' => $timbradoConfirmationWatcher,
+    'timbrado-directo' => $directStampingWatcher,
+    'timbrado-datos-fiscales' => $fiscalDataWatcher,
+    'timbrado-conclusion' => $timbradoConclusionWatcher,
 ];
 
 $pollingIntervalSeconds = (int) $config->get('MONITORING_POLLING_INTERVAL_SECONDS', '10');

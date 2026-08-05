@@ -26,27 +26,7 @@ const panels = {
 const wsStatusEl = document.getElementById('ws-status');
 const engineStatusEl = document.getElementById('engine-status');
 
-const activityLogEl = document.getElementById('activity-log');
-const activityEntriesEl = activityLogEl.querySelector('.activity-panel__entries');
-
 const NEW_CARD_HIGHLIGHT_MS = 5000;
-const ACTIVITY_LOG_LIMIT = 20;
-
-const ACTIVITY_TYPES = {
-    'guia.detectada': { icon: 'bi-file-earmark-plus-fill', label: 'Nueva guía' },
-    'guia.actualizada': { icon: 'bi-pencil-fill', label: 'Guía editada' },
-    'guia.timbrado_solicitado': { icon: 'bi-envelope-paper-fill', label: 'Solicitud de Timbrado' },
-    'solicitud_timbrado.aprobada': { icon: 'bi-check-circle-fill text-success', label: 'Timbrado aprobado' },
-    'solicitud_timbrado.rechazada': { icon: 'bi-x-circle-fill text-danger', label: 'Timbrado rechazado' },
-    'guia.timbrado_completado': { icon: 'bi-receipt', label: 'Guía timbrada' },
-    'guia.timbrado_error': { icon: 'bi-exclamation-triangle-fill text-danger', label: 'Error de timbrado' },
-    'guia.liberacion_solicitada': { icon: 'bi-send-fill', label: 'Solicitud de Liberación' },
-    'solicitud_liberacion.aprobada': { icon: 'bi-check-circle-fill text-success', label: 'Liberación aprobada' },
-    'solicitud_liberacion.rechazada': { icon: 'bi-x-circle-fill text-danger', label: 'Liberación rechazada' },
-    'guia.liberacion_ejecutando': { icon: 'bi-gear-fill', label: 'Inicio de ejecución en SICRET' },
-    'guia.liberacion_completada': { icon: 'bi-check-all text-success', label: 'Liberación completada' },
-    'guia.liberacion_error': { icon: 'bi-exclamation-triangle-fill text-danger', label: 'Error durante la liberación' },
-};
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -103,6 +83,12 @@ function buildCard(guia, accent) {
         ? `<div class="guia-card__operador" title="${escapeHtml(guia.operador)}"><i class="bi bi-person-badge"></i>${escapeHtml(guia.operador)}</div>`
         : '';
 
+    // No toda guía trae contenedor (ver App\Liberacion\ContenedorLookup) —
+    // se omite el renglón entero cuando no aplica en vez de mostrarlo vacío.
+    const contenedorHtml = guia.contenedor
+        ? `<div class="guia-card__contenedor" title="${escapeHtml(guia.contenedor)}"><i class="bi bi-box-seam"></i>${escapeHtml(guia.contenedor)}</div>`
+        : '';
+
     card.innerHTML = `
         <img class="guia-card__logo guia-card__logo--${logo.modifier}" src="${logo.src}" alt="${logo.alt}" loading="lazy">
 
@@ -113,6 +99,7 @@ function buildCard(guia, accent) {
             <span><i class="bi bi-clock-history"></i>${formatFecha(guia.fecha)}</span>
             <span><i class="bi bi-truck"></i>${escapeHtml(guia.placas1)}</span>
         </div>
+        ${contenedorHtml}
         ${operadorHtml}
     `;
 
@@ -125,17 +112,24 @@ function updateCounts() {
         setTextWithBump(panel.countEl, count);
         panel.bodyEl.classList.toggle('is-empty', count === 0);
     });
+}
 
-    setTextWithBump(document.getElementById('kpi-generadas'), panels.generadas.cardsEl.children.length);
-    setTextWithBump(document.getElementById('kpi-liberacion'), panels.liberacion.cardsEl.children.length);
-    setTextWithBump(
-        document.getElementById('kpi-exito'),
-        panels.timbrado.cardsEl.querySelectorAll('[data-resultado="exito"]').length,
-    );
-    setTextWithBump(
-        document.getElementById('kpi-error'),
-        panels.timbrado.cardsEl.querySelectorAll('[data-resultado="error"]').length,
-    );
+// Los 5 KPIs de la barra superior (Guías Creadas / Aprobadas-Rechazadas
+// para Timbrar / Aprobadas-Rechazadas para Liberación) NO se derivan de
+// las tarjetas visibles en pantalla — son el mismo conteo por ventana de
+// jornada (07:00, ver App\Dashboard\BusinessDay) que persiste el resumen
+// diario, para que la barra y ese resumen siempre coincidan.
+function renderKpis(kpis) {
+    setTextWithBump(document.getElementById('kpi-guias-creadas'), kpis.guias_creadas ?? 0);
+    setTextWithBump(document.getElementById('kpi-timbrado-aprobadas'), kpis.timbrado_aprobadas ?? 0);
+    setTextWithBump(document.getElementById('kpi-timbrado-rechazadas'), kpis.timbrado_rechazadas ?? 0);
+    setTextWithBump(document.getElementById('kpi-liberacion-aprobadas'), kpis.liberacion_aprobadas ?? 0);
+    setTextWithBump(document.getElementById('kpi-liberacion-rechazadas'), kpis.liberacion_rechazadas ?? 0);
+}
+
+async function fetchKpis() {
+    const response = await fetch('/api/trafico-kpis.php', { cache: 'no-store' });
+    renderKpis(await response.json());
 }
 
 function renderInitialGuias(guias) {
@@ -188,42 +182,27 @@ function addNewGuia(guia) {
     soundManager.playNewGuide();
 }
 
-function addActivityEntry({ type, prNumber }) {
-    const meta = ACTIVITY_TYPES[type] ?? ACTIVITY_TYPES.new_guide;
-    const entry = document.createElement('div');
-    entry.className = `activity-entry activity-entry--${type}`;
-
-    const time = new Date().toLocaleTimeString('es-MX', { hour12: false });
-
-    entry.innerHTML = `
-        <i class="bi ${meta.icon} activity-entry__icon"></i>
-        <div class="activity-entry__body">
-            <span class="activity-entry__time">${escapeHtml(time)}</span>
-            <span class="activity-entry__label">${escapeHtml(meta.label)}</span>
-            <span class="activity-entry__pr">${escapeHtml(prNumber)}</span>
-        </div>
-    `;
-
-    activityEntriesEl.prepend(entry);
-
-    while (activityEntriesEl.children.length > ACTIVITY_LOG_LIMIT) {
-        activityEntriesEl.lastElementChild.remove();
-    }
-
-    activityLogEl.classList.remove('is-empty');
-}
-
 function moveCards(guias, targetPanel, stateClass) {
     guias.forEach((guiaInfo) => {
         const id = guiaInfo.id || guiaInfo.guia_id;
-        const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
-        
+        let card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+
         if (card) {
             // Update styling classes
             card.classList.remove('guia-card--generada', 'guia-card--liberacion', 'guia-card--timbrado');
             card.classList.add(`guia-card--${stateClass}`);
-            
-            // Move to new panel
+        } else if (guiaInfo.num_guia && guiaInfo.fecha) {
+            // La guía no estaba en pantalla (jornada anterior sin actividad
+            // al momento de cargar la página) — se crea aquí en vez de
+            // perder el evento en silencio. Requiere que el payload traiga
+            // la fila completa (ver
+            // App\Liberacion\GuiaLookupRepository::buscarCompletoPorId());
+            // si solo trae id/num_guia (payload viejo), no hay suficiente
+            // información para pintar la tarjeta y el evento se ignora.
+            card = buildCard(guiaInfo, stateClass);
+        }
+
+        if (card) {
             targetPanel.cardsEl.prepend(card);
         }
     });
@@ -250,27 +229,19 @@ function handleMessage(event) {
     const message = JSON.parse(event.data);
     const evName = message.event;
 
-    // Log the domain event if we track it
-    if (ACTIVITY_TYPES[evName]) {
-        if (message.payload.guias && message.payload.guias.length > 0) {
-            message.payload.guias.forEach(g => {
-                addActivityEntry({ type: evName, prNumber: g.num_guia });
-            });
-        } else if (message.payload.num_guia) {
-            addActivityEntry({ type: evName, prNumber: message.payload.num_guia });
-        }
-    }
-
     if (evName === 'guia.detectada') {
         addNewGuia(message.payload);
+        fetchKpis();
     } else if (evName === 'guia.timbrado_solicitado') {
         moveCards(message.payload.guias, panels.solicitudes_timbrado, 'liberacion'); // Use 'liberacion' as warning-color for pending
+        soundManager.playReleaseRequested();
     } else if (evName === 'guia.liberacion_solicitada') {
         moveCards(message.payload.guias, panels.liberacion, 'liberacion');
+        soundManager.playReleaseRequested();
     } else if (
-        evName === 'solicitud_timbrado.aprobada' || 
-        evName === 'solicitud_timbrado.rechazada' || 
-        evName === 'solicitud_liberacion.aprobada' || 
+        evName === 'solicitud_timbrado.aprobada' ||
+        evName === 'solicitud_timbrado.rechazada' ||
+        evName === 'solicitud_liberacion.aprobada' ||
         evName === 'solicitud_liberacion.rechazada'
     ) {
         const isAprobada = evName.includes('.aprobada');
@@ -278,9 +249,9 @@ function handleMessage(event) {
         const tipo = isTimbrado ? 'Timbrado' : 'Liberación';
         const resultado = isAprobada ? 'Aprobada' : 'Rechazada';
         const color = isAprobada ? 'success' : 'danger';
-        
+
         moveCards(message.payload.guias, panels.timbrado, 'timbrado');
-        
+
         message.payload.guias.forEach((g) => {
             const id = g.id || g.guia_id;
             const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
@@ -295,11 +266,26 @@ function handleMessage(event) {
                 });
             }
         });
-    } else if (evName === 'guia.timbrado_completado') {
+
+        // Cada resultado suena (aprobada = éxito, rechazada = error) — antes
+        // ninguno de los 4 casos de este bloque emitía sonido.
+        if (isAprobada) {
+            soundManager.playStampSuccess();
+        } else {
+            soundManager.playStampError();
+        }
+
+        fetchKpis();
+    } else if (evName === 'guia.timbrado_completado' || evName === 'guia.timbrado_concluido') {
         // Puente temporal con el timbrado manual de SICRET (ver
         // App\Monitoring\Timbrado\TimbradoConfirmationWatcher) — la tarjeta
-        // ya está en "Resultado del Timbrado" desde que se aprobó; aquí solo
+        // ya está en "Respuesta de Solicitudes" desde que se aprobó; aquí solo
         // se actualiza su resolución con la confirmación real de SICRET.
+        // guia.timbrado_concluido (App\Monitoring\Timbrado\
+        // TimbradoConclusionWatcher) es la confirmación definitiva y puede
+        // llegar sin que timbrado_completado se haya disparado nunca (ver
+        // docblock de TimbradoConclusionEvidenceSource::buscar()) — sin
+        // este caso, esas tarjetas se quedaban mostrando solo "Aprobada".
         message.payload.guias.forEach((g) => {
             const id = g.id || g.guia_id;
             const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
@@ -314,6 +300,64 @@ function handleMessage(event) {
                 });
             }
         });
+        soundManager.playStampSuccess();
+    } else if (evName === 'guia.liberacion_ejecutando') {
+        message.payload.guias.forEach((g) => {
+            const id = g.id || g.guia_id;
+            const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+            if (card) {
+                updateCardResult(card, {
+                    tipo: 'Liberación',
+                    resultado: 'Ejecutando en SICRET',
+                    fecha: new Date().toISOString(),
+                    usuario: 'ATLAS',
+                    observaciones: '',
+                    color: 'success',
+                });
+            }
+        });
+    } else if (evName === 'guia.liberacion_completada') {
+        message.payload.guias.forEach((g) => {
+            const id = g.id || g.guia_id;
+            const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+            if (card) {
+                updateCardResult(card, {
+                    tipo: 'Liberación',
+                    resultado: 'Confirmada en SICRET',
+                    fecha: new Date().toISOString(),
+                    usuario: 'SICRET',
+                    observaciones: '',
+                    color: 'success',
+                });
+            }
+        });
+        soundManager.playStampSuccess();
+    } else if (evName === 'guia.liberacion_error') {
+        // App\Liberacion\Execution\LiberacionExecutor::marcarError() publica
+        // este mismo evento SIN 'guias' (solo solicitud_id/motivo) cuando el
+        // fallo ocurre antes de tocar SICRET — a diferencia de
+        // LiberationConfirmationWatcher::alFallar(), que sí la incluye. Sin
+        // este guard, esos casos rompían handleMessage() con un TypeError.
+        (message.payload.guias ?? []).forEach((g) => {
+            const id = g.id || g.guia_id;
+            const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+            if (card) {
+                updateCardResult(card, {
+                    tipo: 'Liberación',
+                    resultado: 'Error',
+                    fecha: new Date().toISOString(),
+                    usuario: 'SICRET',
+                    observaciones: message.payload.motivo || '',
+                    color: 'danger',
+                });
+            }
+        });
+        soundManager.playStampError();
+    } else if (evName === 'dashboard.reset_diario') {
+        // Corte de jornada (07:00): boardState() ya recalcula "hoy" contra
+        // la nueva ventana en el servidor — recargar es lo más simple para
+        // reflejarla sin duplicar la lógica de render de los paneles.
+        window.location.reload();
     }
 }
 
@@ -380,8 +424,6 @@ function tickClock() {
 }
 
 const soundManager = new SoundManager();
-
-activityLogEl.classList.add('is-empty');
 
 const initialGuias = JSON.parse(document.getElementById('initial-guias').textContent || '[]');
 renderInitialGuias(initialGuias);

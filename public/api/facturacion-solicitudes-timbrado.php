@@ -6,10 +6,14 @@ require __DIR__ . '/../../vendor/autoload.php';
 
 use App\Config\Config;
 use App\Database\ConnectionFactory;
+use App\Liberacion\ClienteLookup;
+use App\Liberacion\ContenedorLookup;
 use App\Liberacion\GuiaLookupRepository;
 use App\Liberacion\JsonResponse;
 use App\Sync\SocketEventPublisher;
+use App\Sync\SourceRegistry;
 use App\Sync\SyncLogger;
+use App\Timbrado\RutaLookup;
 use App\Timbrado\SolicitudTimbradoDetalleRepository;
 use App\Timbrado\SolicitudTimbradoHistorialRepository;
 use App\Timbrado\SolicitudTimbradoRepository;
@@ -48,9 +52,14 @@ try {
     // SolicitudTimbradoService::listarConDetalleGuia() (evita duplicar el
     // JOIN/consulta ya definido ahí) — este endpoint no escribe nada, mismo
     // patrón que facturacion-solicitudes.php (Liberación).
+    $sourceRegistry = new SourceRegistry($config, new ConnectionFactory(), __DIR__ . '/../../config/sources.php');
+
     $service = new SolicitudTimbradoService(
         $connection,
         new GuiaLookupRepository($connection),
+        new RutaLookup($sourceRegistry, $logger),
+        new ContenedorLookup($sourceRegistry, $logger),
+        new ClienteLookup($sourceRegistry, $logger),
         new SolicitudTimbradoRepository($connection),
         new SolicitudTimbradoDetalleRepository($connection),
         new SolicitudTimbradoHistorialRepository($connection),

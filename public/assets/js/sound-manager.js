@@ -1,11 +1,12 @@
 // Responsabilidad única: administrar la reproducción de los sonidos
-// de notificación del Dashboard de Tráfico.
+// de notificación — compartido por el Dashboard de Tráfico y el Tablero
+// de Facturación.
 
 const SOUND_VOLUME = 0.45;
 const POOL_SIZE = 3;
 
 const SOUND_FILES = {
-    newGuide: '/assets/sounds/new_guide.ogg',
+    newGuide: '/assets/sounds/new-guide.ogg',
     releaseRequested: '/assets/sounds/release-request.ogg',
     stampSuccess: '/assets/sounds/stamp-success.ogg',
     stampError: '/assets/sounds/stamp-error.ogg',

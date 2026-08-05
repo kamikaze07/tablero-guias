@@ -10,6 +10,8 @@ final class SolicitudLiberacionPayload
     private function __construct(
         public readonly string $motivo,
         public readonly array $numGuias,
+        public readonly ?string $source,
+        public readonly ?string $solicitante,
     ) {
     }
 
@@ -60,6 +62,27 @@ final class SolicitudLiberacionPayload
             throw SolicitudLiberacionValidationException::guiasDuplicadas($duplicadas);
         }
 
-        return new self($motivo, $numGuias);
+        // Opcional a propósito (retrocompatible): si no viene, se preserva
+        // el comportamiento de siempre (rechazar como ambiguo un num_guia
+        // que exista en más de una fuente, ver
+        // SolicitudLiberacionService::resolverGuias()). Cuando sí viene,
+        // desambigua por fuente en vez de solo detectar la colisión — ver
+        // knowledge/modules/solicitudes-liberacion/security.md §2.2, que ya
+        // anticipaba este campo pendiente.
+        $source = is_string($data['source'] ?? null) && trim($data['source']) !== ''
+            ? trim($data['source'])
+            : null;
+
+        // Opcional a propósito (retrocompatible) — mismo campo y mismo
+        // motivo que en SolicitudTimbradoPayload::fromArray(): identifica al
+        // usuario real de trafico-system para las notificaciones de
+        // Mattermost (ver App\Liberacion\SolicitudLiberacionService::crear());
+        // sin esto, el actor quedaba fijo en "trafico-system" para toda
+        // solicitud, sin importar quién la generó.
+        $solicitante = is_string($data['solicitante'] ?? null) && trim($data['solicitante']) !== ''
+            ? trim($data['solicitante'])
+            : null;
+
+        return new self($motivo, $numGuias, $source, $solicitante);
     }
 }
