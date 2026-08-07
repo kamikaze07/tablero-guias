@@ -39,7 +39,7 @@ final class TimbradoConclusionWatcher extends EvidenceWatcher
     ) {
     }
 
-    /** @return iterable<array{solicitud_id: int, guias: array<int, array{guia_id: int, num_guia: string, source: ?string}>}> */
+    /** @return iterable<array{solicitud_id: int, creada_en: string, guias: array<int, array{guia_id: int, num_guia: string, source: ?string}>}> */
     protected function pendientes(): iterable
     {
         foreach ($this->solicitudRepository->listarPendientesConclusion() as $solicitud) {
@@ -49,6 +49,11 @@ final class TimbradoConclusionWatcher extends EvidenceWatcher
 
             yield [
                 'solicitud_id' => $solicitudId,
+                // Ver docblock de TimbradoConclusionEvidenceSource::tieneDatosFiscales():
+                // la fecha de creación de ESTA solicitud es lo que le permite
+                // a la evidencia distinguir "ya se cumplió" de "ve evidencia
+                // de una solicitud anterior distinta".
+                'creada_en' => (string) $solicitud['created_at'],
                 'guias' => array_map(
                     static fn (array $g): array => [
                         'guia_id' => (int) $g['guia_id'],
@@ -63,7 +68,7 @@ final class TimbradoConclusionWatcher extends EvidenceWatcher
 
     protected function buscarEvidencia(mixed $item): Evidence
     {
-        if (!$this->solicitudCompleta($item['guias'])) {
+        if (!$this->solicitudCompleta($item['guias'], $item['creada_en'])) {
             return Evidence::pendiente();
         }
 
@@ -79,9 +84,9 @@ final class TimbradoConclusionWatcher extends EvidenceWatcher
      *
      * @param array<int, array{guia_id: int, num_guia: string, source: ?string}> $guias
      */
-    private function solicitudCompleta(array $guias): bool
+    private function solicitudCompleta(array $guias, string $creadaEn): bool
     {
-        return $this->evidenceSource->solicitudCompleta($guias);
+        return $this->evidenceSource->solicitudCompleta($guias, $creadaEn);
     }
 
     protected function alConfirmar(mixed $item, Evidence $evidencia): void

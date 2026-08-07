@@ -63,8 +63,25 @@ assertTest(
 );
 $evidenceInstance = $evidenceReflector->newInstanceWithoutConstructor();
 assertTest(
-    $evidenceInstance->solicitudCompleta([]) === false,
-    "solicitudCompleta([]) retorna false ante lote vacío",
+    $evidenceInstance->solicitudCompleta([], '2026-01-01 00:00:00') === false,
+    "solicitudCompleta([], creada_en) retorna false ante lote vacío",
+    $passed, $failed
+);
+
+// 4b. Bug real corregido (guías GERO PR-220277/PR-220278): evidencia
+// ANTERIOR a la creación de la solicitud (folio de un timbrado previo, ya
+// invalidado por una Liberación) no debe poder concluirla — ver docblock
+// de TimbradoConclusionEvidenceSource::tieneDatosFiscales().
+assertTest(
+    $evidenceReflector->hasMethod('tieneDatosFiscales')
+        && $evidenceReflector->getMethod('tieneDatosFiscales')->getNumberOfParameters() === 3,
+    "TimbradoConclusionEvidenceSource::tieneDatosFiscales() exige creadaEn (evita evidencia obsoleta de una solicitud anterior)",
+    $passed, $failed
+);
+assertTest(
+    $evidenceReflector->hasMethod('datosPorGuia')
+        && $evidenceReflector->getMethod('datosPorGuia')->getNumberOfParameters() === 3,
+    "TimbradoConclusionEvidenceSource::datosPorGuia() exige creadaEn (mismo criterio de frescura)",
     $passed, $failed
 );
 
