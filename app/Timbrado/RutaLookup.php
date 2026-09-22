@@ -43,6 +43,33 @@ use Throwable;
  *    disponible, pero es preferible mostrar el nombre real a mostrar el de
  *    una empresa equivocada. Ver consultarRutas()/nombreCortoOrigenPorRfc().
  *
+ * 3. (11/ago, guías Whirlpool de sicrePR/sicreGero) El sufijo "(ciudad)"
+ *    se armaba con `localidad` (código de catálogo SAT), que resultó NO
+ *    CONFIABLE: para el registro maestro de Ubicación ORIGEN de Whirlpool
+ *    (id OR300289, reutilizado en cientos de guías) quedó mal capturado
+ *    como "TORREÓN" cuando la dirección real es Apodaca, Nuevo León —
+ *    error a nivel del registro maestro, no de una guía puntual, así que
+ *    se arrastraba a toda guía que lo reutilizara. `ciudad` (texto libre
+ *    capturado junto con calle/CP) sí es consistente con la dirección
+ *    real en todos los casos verificados, así que ahora tiene prioridad;
+ *    `localidad` queda solo como respaldo si `ciudad` viene vacío. Ver
+ *    conLocalidad().
+ *
+ * 4. (27/ago, guías PR-220481/PR-220482 de sicreGero) La resolución de
+ *    DESTINO por `clave_gene_desti` contra `emp_destinataria.clave_desti`
+ *    (nota #2) demostró ser el MISMO problema NO CONFIABLE ya visto en
+ *    ORIGEN: la fila `clave_desti=265` tiene `rfc="QW12"` (placeholder de
+ *    catálogo, no un RFC real) y `nombreCorto="WTF COMALES REYNOSA"` — sin
+ *    relación con la guía real, cuyo Complemento Carta Porte trae RFC
+ *    `API931215HZ3` (APIALTAMIRA) y nombre "ADMINISTRACION PORTUARIA
+ *    INTEGRAL DE ALTAMIRA". Se corrige aplicando a DESTINO el mismo
+ *    esquema que ya usa ORIGEN: resolver por RFC contra
+ *    `emp_destinataria.rfc` solo cuando resuelve a un único `nombreCorto`,
+ *    y caer al `nombre` completo de la propia Ubicación en cualquier otro
+ *    caso (RFC sin match, o con varios nombres distintos). `clave_gene_desti`
+ *    ya no se usa para resolver el nombre. Ver
+ *    nombreCortoDestinoPorRfc()/consultarRutas().
+ *
  * Nada de esto se persiste en ATLAS: es solo lectura, igual que el resto
  * de App\Sync.
  *
@@ -234,19 +261,19 @@ final class RutaLookup
             $placeholders = implode(',', array_fill(0, count($numGuias), '?'));
 
             $stmt = $pdo->prepare(
-                "SELECT guia, tipo_ubic, nombre, rfc, clave_gene_desti, localidad
+                "SELECT guia, tipo_ubic, nombre, rfc, ciudad, localidad
                  FROM tras_cartaporte_ubic
                  WHERE guia IN ({$placeholders})"
             );
             $stmt->execute(array_values($numGuias));
             $ubicaciones = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            $clavesDestino = [];
+            $rfcsDestino = [];
             $rfcsOrigen = [];
 
             foreach ($ubicaciones as $u) {
-                if ($u['tipo_ubic'] === 'DESTINO' && $u['clave_gene_desti'] !== null && $u['clave_gene_desti'] !== '') {
-                    $clavesDestino[] = (int) $u['clave_gene_desti'];
+                if ($u['tipo_ubic'] === 'DESTINO' && trim((string) $u['rfc']) !== '') {
+                    $rfcsDestino[] = trim($u['rfc']);
                 }
 
                 if ($u['tipo_ubic'] === 'ORIGEN' && trim((string) $u['rfc']) !== '') {
@@ -254,7 +281,7 @@ final class RutaLookup
                 }
             }
 
-            $nombreCortoPorClaveDestino = $this->nombreCortoDestinoPorClave($pdo, array_values(array_unique($clavesDestino)));
+            $nombreCortoPorRfcDestino = $this->nombreCortoDestinoPorRfc($pdo, array_values(array_unique($rfcsDestino)));
             $nombreCortoPorRfcOrigen = $this->nombreCortoOrigenPorRfc($pdo, array_values(array_unique($rfcsOrigen)));
 
             $resultado = [];
@@ -262,6 +289,7 @@ final class RutaLookup
             foreach ($ubicaciones as $u) {
                 $numGuia = $u['guia'];
                 $resultado[$numGuia] ??= ['origen' => '', 'destino' => ''];
+                $ciudad = $this->normalizarTexto($u['ciudad']);
                 $localidad = $this->normalizarTexto($u['localidad']);
 
                 if ($u['tipo_ubic'] === 'ORIGEN') {
@@ -271,14 +299,18 @@ final class RutaLookup
                     // se cae al nombre completo de la propia Ubicación en
                     // vez de dejarlo vacío o mostrar una empresa ajena.
                     $nombre = $nombreCortoPorRfcOrigen[$rfc] ?? $this->normalizarTexto($u['nombre']);
-                    $resultado[$numGuia]['origen'] = $this->conLocalidad($nombre, $localidad);
+                    $resultado[$numGuia]['origen'] = $this->conLocalidad($nombre, $ciudad, $localidad);
                 }
 
                 if ($u['tipo_ubic'] === 'DESTINO') {
-                    $clave = ($u['clave_gene_desti'] !== null && $u['clave_gene_desti'] !== '') ? (int) $u['clave_gene_desti'] : null;
-                    $nombre = ($clave !== null ? ($nombreCortoPorClaveDestino[$clave] ?? null) : null)
-                        ?? $this->normalizarTexto($u['nombre']);
-                    $resultado[$numGuia]['destino'] = $this->conLocalidad($nombre, $localidad);
+                    $rfc = trim((string) $u['rfc']);
+                    // Sin nombreCorto único en emp_destinataria (RFC
+                    // placeholder de catálogo/no registrado, ver nota #4
+                    // del docblock de la clase): se cae al nombre completo
+                    // de la propia Ubicación en vez de mostrar una empresa
+                    // ajena.
+                    $nombre = $nombreCortoPorRfcDestino[$rfc] ?? $this->normalizarTexto($u['nombre']);
+                    $resultado[$numGuia]['destino'] = $this->conLocalidad($nombre, $ciudad, $localidad);
                 }
             }
 
@@ -297,26 +329,38 @@ final class RutaLookup
     }
 
     /**
-     * @param int[] $claves
-     * @return array<int, string>
+     * Nombre corto del DESTINO por RFC — solo cuando ese RFC resuelve a un
+     * único `nombreCorto` en `emp_destinataria`. Mismo esquema que
+     * nombreCortoOrigenPorRfc(): un RFC placeholder de catálogo (p. ej.
+     * "QW12") o uno que no está registrado ahí da cero o varios resultados
+     * distintos — en ambos casos el llamador debe caer al nombre completo
+     * de la propia Ubicación (ver consultarRutas() y nota #4 del docblock
+     * de la clase).
+     *
+     * @param string[] $rfcs
+     * @return array<string, string>
      */
-    private function nombreCortoDestinoPorClave(PDO $pdo, array $claves): array
+    private function nombreCortoDestinoPorRfc(PDO $pdo, array $rfcs): array
     {
-        if ($claves === []) {
+        if ($rfcs === []) {
             return [];
         }
 
-        $placeholders = implode(',', array_fill(0, count($claves), '?'));
+        $placeholders = implode(',', array_fill(0, count($rfcs), '?'));
 
         $stmt = $pdo->prepare(
-            "SELECT clave_desti, nombreCorto FROM emp_destinataria WHERE clave_desti IN ({$placeholders})"
+            "SELECT rfc, MIN(nombreCorto) AS nombreCorto
+             FROM emp_destinataria
+             WHERE rfc IN ({$placeholders})
+             GROUP BY rfc
+             HAVING COUNT(DISTINCT nombreCorto) = 1"
         );
-        $stmt->execute(array_values($claves));
+        $stmt->execute(array_values($rfcs));
 
         $resultado = [];
 
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $resultado[(int) $row['clave_desti']] = $this->normalizarTexto($row['nombreCorto']);
+            $resultado[$row['rfc']] = $this->normalizarTexto($row['nombreCorto']);
         }
 
         return $resultado;
@@ -359,8 +403,18 @@ final class RutaLookup
         return $resultado;
     }
 
-    private function conLocalidad(string $nombre, string $localidad): string
+    /**
+     * `ciudad` (texto libre capturado junto con calle/CP, consistente con
+     * la dirección real de la Ubicación) tiene prioridad sobre `localidad`
+     * (código de catálogo SAT): ver corrección 3 en el docblock de la
+     * clase — `localidad` puede quedar mal capturado a nivel del registro
+     * maestro de Ubicación y arrastrarse a todas las guías que lo
+     * reutilizan, aunque `ciudad`/`estado` sí sean correctos.
+     */
+    private function conLocalidad(string $nombre, string $ciudad, string $localidad): string
     {
-        return $localidad === '' ? $nombre : "{$nombre}({$localidad})";
+        $sufijo = $ciudad !== '' ? $ciudad : $localidad;
+
+        return $sufijo === '' ? $nombre : "{$nombre}({$sufijo})";
     }
 }

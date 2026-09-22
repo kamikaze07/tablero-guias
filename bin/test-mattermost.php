@@ -4,7 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php';
 
 use App\Config\Config;
-use App\Notifications\Dispatcher\NotificationDispatcher;
+use App\Notifications\Dispatcher\NotificationDispatcher;use App\Notifications\Consumers\Trafico\TraficoWebhookConsumer;
 use App\Notifications\Consumers\Mattermost\MattermostConsumer;
 use App\Notifications\Consumers\Mattermost\MattermostRouter;
 use App\Notifications\Consumers\Mattermost\MattermostHttpClient;
@@ -43,6 +43,7 @@ try {
     // 6. Configurar Dispatcher
     $dispatcher = new NotificationDispatcher();
     $dispatcher->registerConsumer($consumer);
+    $dispatcher->registerConsumer(new TraficoWebhookConsumer($config->get('TRAFICO_EVENTS_URL'), $config->get('TRAFICO_EVENTS_SECRET')));
 
     // 7. Emitir Evento de Prueba
     echo "Enviando evento de prueba a Mattermost...\n";

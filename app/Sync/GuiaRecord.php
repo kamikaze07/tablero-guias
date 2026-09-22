@@ -55,9 +55,9 @@ final class GuiaRecord
             sourceNum: (int) $row['num'],
             numGuia: (string) $row['num_guia'],
             folioImp: (string) $row['folio_imp'],
-            fecha: new \DateTimeImmutable((string) $row['fecha']),
-            fechaC: new \DateTimeImmutable((string) $row['fecha_c']),
-            fechaD: new \DateTimeImmutable((string) $row['fecha_d']),
+            fecha: self::parseDate($row['fecha'] ?? null),
+            fechaC: self::parseDate($row['fecha_c'] ?? null),
+            fechaD: self::parseDate($row['fecha_d'] ?? null),
             numLlama: (int) $row['num_llama'],
             estado: (string) $row['estado'],
             nombre: (string) $row['nombre'],
@@ -89,5 +89,20 @@ final class GuiaRecord
             lidField: $row['lid'] !== null ? (string) $row['lid'] : null,
             actualizacion: $row['actualizacion'] !== null ? (string) $row['actualizacion'] : null,
         );
+    }
+
+    private static function parseDate(mixed $val): \DateTimeImmutable
+    {
+        $str = trim((string) $val);
+
+        if ($str === '' || str_starts_with($str, '0000-00-00')) {
+            return new \DateTimeImmutable('1970-01-01 00:00:00');
+        }
+
+        try {
+            return new \DateTimeImmutable($str);
+        } catch (\Throwable) {
+            return new \DateTimeImmutable('1970-01-01 00:00:00');
+        }
     }
 }

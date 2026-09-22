@@ -475,7 +475,8 @@ final class SolicitudTimbradoRepository
              JOIN solicitud_timbrado_detalle d ON d.solicitud_id = st.id
              JOIN guias g ON g.id = d.guia_id
              {$where}
-             ORDER BY {$orderBy} {$orderDir}, st.id DESC
+             ORDER BY (st.estado IN ('" . self::ESTADO_PENDIENTE . "', '" . self::ESTADO_ESPERANDO_TIMBRADO . "')) DESC,
+                      {$orderBy} {$orderDir}, st.id DESC
              LIMIT :limit OFFSET :offset"
         );
 

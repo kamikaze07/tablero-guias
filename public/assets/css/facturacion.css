@@ -148,33 +148,33 @@
 }
 
 /* Anchos por columna (suman 100%) para las dos tablas "en vivo" — evita
-   que columnas angostas (Estado, Esperando) empujen a las anchas
-   (Cliente, Ruta, Operador) fuera del ancho disponible. Guía/Contenedor/
-   Cliente/Ruta/Operador/Empresa/Fecha/Estado/Esperando en ese orden. */
-.board-column--solicitudes-timbrado table th:nth-child(1) { width: 11%; }
-.board-column--solicitudes-timbrado table th:nth-child(2) { width: 9%; }
-.board-column--solicitudes-timbrado table th:nth-child(3) { width: 14%; }
-.board-column--solicitudes-timbrado table th:nth-child(4) { width: 16%; }
-.board-column--solicitudes-timbrado table th:nth-child(5) { width: 16%; }
+   que columnas angostas (Estado) empujen a las anchas (Cliente, Ruta,
+   Operador) fuera del ancho disponible. Guía/Contenedor/Cliente/Ruta/
+   Operador/Empresa/Fecha/Estado en ese orden (sin Esperando: el tiempo de
+   espera se sigue viendo vía el borde de color espera-atencion/critica de
+   la fila — ver claseEspera() en facturacion.js). */
+.board-column--solicitudes-timbrado table th:nth-child(1) { width: 12%; }
+.board-column--solicitudes-timbrado table th:nth-child(2) { width: 10%; }
+.board-column--solicitudes-timbrado table th:nth-child(3) { width: 15%; }
+.board-column--solicitudes-timbrado table th:nth-child(4) { width: 18%; }
+.board-column--solicitudes-timbrado table th:nth-child(5) { width: 17%; }
 .board-column--solicitudes-timbrado table th:nth-child(6) { width: 8%; }
-.board-column--solicitudes-timbrado table th:nth-child(7) { width: 12%; }
-.board-column--solicitudes-timbrado table th:nth-child(8) { width: 8%; }
-.board-column--solicitudes-timbrado table th:nth-child(9) { width: 6%; }
+.board-column--solicitudes-timbrado table th:nth-child(7) { width: 13%; }
+.board-column--solicitudes-timbrado table th:nth-child(8) { width: 7%; }
 
-/* Igual que arriba, pero para la tabla de Liberación (11 columnas: suma
-   Motivo y Detalle además de Guía/Contenedor/Cliente/Ruta/Operador/
-   Empresa/Fecha/Estado/Esperando). */
-.board-column--solicitudes table th:nth-child(1) { width: 9%; }
-.board-column--solicitudes table th:nth-child(2) { width: 7%; }
-.board-column--solicitudes table th:nth-child(3) { width: 11%; }
-.board-column--solicitudes table th:nth-child(4) { width: 13%; }
-.board-column--solicitudes table th:nth-child(5) { width: 13%; }
-.board-column--solicitudes table th:nth-child(6) { width: 6%; }
-.board-column--solicitudes table th:nth-child(7) { width: 9%; }
-.board-column--solicitudes table th:nth-child(8) { width: 11%; }
+/* Igual que arriba, pero para la tabla de Liberación (9 columnas: suma
+   Motivo además de Guía/Contenedor/Cliente/Ruta/Operador/Empresa/Fecha/
+   Estado; sin Esperando ni Detalle — el error_reason ahora va en el title
+   del propio badge de Estado, ver celdaEmpresaLogo()/renderSolicitudes()). */
+.board-column--solicitudes table th:nth-child(1) { width: 10%; }
+.board-column--solicitudes table th:nth-child(2) { width: 8%; }
+.board-column--solicitudes table th:nth-child(3) { width: 13%; }
+.board-column--solicitudes table th:nth-child(4) { width: 16%; }
+.board-column--solicitudes table th:nth-child(5) { width: 15%; }
+.board-column--solicitudes table th:nth-child(6) { width: 7%; }
+.board-column--solicitudes table th:nth-child(7) { width: 10%; }
+.board-column--solicitudes table th:nth-child(8) { width: 14%; }
 .board-column--solicitudes table th:nth-child(9) { width: 7%; }
-.board-column--solicitudes table th:nth-child(10) { width: 7%; }
-.board-column--solicitudes table th:nth-child(11) { width: 7%; }
 
 .board-column__note {
     flex: 0 0 auto;
@@ -228,6 +228,44 @@
     text-overflow: ellipsis;
 }
 
+/* Lote agrupado (ver agruparPorSolicitud() en facturacion.js): Guía y
+   Contenedor listan una línea por guía del mismo solicitud_id, alineadas
+   en el mismo orden entre ambas celdas. */
+.lote-lista {
+    display: flex;
+    flex-direction: column;
+    gap: .2rem;
+}
+
+.lote-linea {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Logo de empresa (FORSIS/GERO) en vez de texto — ver celdaEmpresaLogo()
+   en facturacion.js. Reutiliza los mismos SVG que .guia-card__logo en
+   trafico.css, a menor tamaño por tratarse de una celda de tabla. */
+.empresa-logo {
+    display: block;
+    margin: 0 auto;
+}
+
+.empresa-logo--forsis {
+    width: 26px;
+    height: 26px;
+    object-fit: contain;
+}
+
+/* Gero: mismo recorte que .guia-card__logo--gero (el SVG deja aire
+   arriba/abajo), para que se perciba del mismo tamaño que Forsis. */
+.empresa-logo--gero {
+    width: 30px;
+    height: 22px;
+    object-fit: cover;
+    object-position: center;
+}
+
 /* Prioridad visual por tiempo de espera */
 
 tr.espera-atencion {
@@ -241,7 +279,7 @@ tr.espera-critica {
 
 /* Letrero de solicitudes desatendidas — ver evaluarAlertaDesatendidas()
    en facturacion.js. Pulsante a propósito (además del sonido que se
-   repite cada 10s): la idea es que sea difícil de ignorar. */
+   repite cada 5s): la idea es que sea difícil de ignorar. */
 .alerta-desatendidas {
     flex: 0 0 auto;
     display: flex;
@@ -261,6 +299,14 @@ tr.espera-critica {
 
 .alerta-desatendidas i {
     font-size: 1.1rem;
+}
+
+/* Contador en vivo de intentos de sonido (ver SoundManager::onLog()) —
+   texto pequeño, sin el peso del mensaje principal, solo para diagnóstico. */
+.alerta-desatendidas__sonido {
+    font-weight: 400;
+    font-size: .8rem;
+    opacity: .85;
 }
 
 @keyframes alerta-desatendidas-pulso {

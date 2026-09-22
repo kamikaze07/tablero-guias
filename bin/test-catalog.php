@@ -4,7 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php';
 
 use App\Config\Config;
-use App\Notifications\Dispatcher\NotificationDispatcher;
+use App\Notifications\Dispatcher\NotificationDispatcher;use App\Notifications\Consumers\Trafico\TraficoWebhookConsumer;
 use App\Notifications\Consumers\Mattermost\MattermostConsumer;
 use App\Notifications\Consumers\Mattermost\MattermostRouter;
 use App\Notifications\Consumers\Mattermost\MattermostHttpClient;
@@ -53,6 +53,7 @@ try {
 
     $dispatcher = new NotificationDispatcher();
     $dispatcher->registerConsumer($consumer);
+    $dispatcher->registerConsumer(new TraficoWebhookConsumer($config->get('TRAFICO_EVENTS_URL'), $config->get('TRAFICO_EVENTS_SECRET')));
 
     echo "Enviando catálogo de notificaciones a Mattermost...\n";
 

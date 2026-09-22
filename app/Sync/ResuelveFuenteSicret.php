@@ -23,9 +23,22 @@ trait ResuelveFuenteSicret
         return null;
     }
 
-    /** SICRET trae de repente espacios NBSP (U+00A0) de relleno — trim() normal no los quita. */
+    /** SICRET trae de repente espacios NBSP (U+00A0) de relleno y doble codificación UTF-8. */
     private function normalizarTexto(?string $valor): string
     {
-        return trim(str_replace("\xC2\xA0", ' ', (string) $valor));
+        if ($valor === null) {
+            return '';
+        }
+
+        $str = (string) $valor;
+
+        if (str_contains($str, "\xC3\x83") || str_contains($str, "\xC3\x82")) {
+            $reparado = @mb_convert_encoding($str, 'Windows-1252', 'UTF-8');
+            if ($reparado !== false && mb_check_encoding($reparado, 'UTF-8')) {
+                $str = $reparado;
+            }
+        }
+
+        return trim(str_replace(["\xC2\xA0", "\xA0"], ' ', $str));
     }
 }

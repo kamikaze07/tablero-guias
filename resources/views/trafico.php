@@ -27,14 +27,23 @@
     </div>
 
     <div class="ops-header__status">
+        <!-- Los navegadores bloquean todo audio hasta la primera
+             interacción del usuario con la página (click/tecla/touch) —
+             ver App\...\sound-manager.js::unlock(). Este aviso es la señal
+             de que aún falta esa interacción; desaparece solo en cuanto
+             ocurre, vía SoundManager::onUnlock(). Mismo patrón que ya
+             tiene facturacion.php. -->
+        <span id="sonido-bloqueado" class="status-pill status-pill--sonido-bloqueado" title="Haz clic en cualquier parte de la página para activar las alertas de sonido">
+            <i class="bi bi-volume-mute-fill"></i> Sonido bloqueado — haz clic aquí
+        </span>
         <span id="ws-status" class="status-pill status-pill--pending">
             <i class="bi bi-wifi"></i> Conectando…
         </span>
         <span id="engine-status" class="status-pill status-pill--pending">
             <i class="bi bi-cpu"></i> Motor: verificando…
         </span>
-        <span class="status-pill status-pill--disabled" title="CFDI Watcher aún no implementado">
-            <i class="bi bi-file-earmark-check"></i> CFDI Watcher: Próximamente
+        <span id="cfdi-status" class="status-pill status-pill--pending">
+            <i class="bi bi-file-earmark-check"></i> CFDI Watcher: verificando…
         </span>
     </div>
 </header>

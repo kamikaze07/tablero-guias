@@ -72,13 +72,24 @@ final class SicretEstatusLookup
     }
 
     /**
+     * Regla de negocio confirmada: una guía es elegible para Liberación
+     * mientras su estatus REAL en SICRET no sea "Por Timbrar" (aún no tiene
+     * CFDI, no aplica liberación todavía), ni "Cancelada" (folio anulado),
+     * ni esté vacío/desconocido. Cualquier otro estatus —incluye "Asignada
+     * Al Operador" y "Pagada Al Operador"— es elegible: la guía conserva su
+     * elegibilidad para volver a solicitarse aunque ya haya sido liberada y
+     * timbrada antes; el estatus posterior al nuevo timbrado dependerá de
+     * cuál era el estatus de origen (Por Timbrar → Asignada; Pagada →
+     * vuelve a Pagada), pero esa transición la gobierna SICRET, no esta
+     * validación.
+     *
      * Normaliza igual que trafico-system
      * (App\modules\guias\services\GuiaBloqueoService::normalizar(), mismo
      * repositorio): SICRET envuelve el valor en '<' '>' (p. ej. "<Asignada
      * Al Operador>") — se retiran antes de comparar como texto de negocio
-     * exacto, no coincidencia parcial.
+     * exacto/prefijo, no coincidencia parcial arbitraria.
      */
-    public function esAsignadaAlOperador(?string $estatus): bool
+    public function esDisponibleParaLiberacion(?string $estatus): bool
     {
         if ($estatus === null) {
             return false;
@@ -88,7 +99,21 @@ final class SicretEstatusLookup
         $valor = trim($valor, '<>');
         $valor = mb_strtoupper(trim($valor), 'UTF-8');
 
-        return $valor === 'ASIGNADA AL OPERADOR';
+        if ($valor === '') {
+            return false;
+        }
+
+        if ($valor === 'POR TIMBRAR') {
+            return false;
+        }
+
+        // "Cancelada: USUARIO DD/MM/AAAA" — coincidencia por prefijo, el
+        // resto es metadata de auditoría, no forma parte del estatus.
+        if (str_starts_with($valor, 'CANCELADA')) {
+            return false;
+        }
+
+        return true;
     }
 
     private function buscarFuente(string $name): ?Source

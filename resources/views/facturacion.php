@@ -28,22 +28,41 @@
     </div>
 
     <div class="ops-header__status">
+        <!-- Los navegadores bloquean todo audio hasta la primera
+             interacción del usuario con la página (click/tecla/touch) —
+             ver App\...\sound-manager.js::unlock(). Este aviso es la señal
+             de que aún falta esa interacción; desaparece solo en cuanto
+             ocurre, vía SoundManager::onUnlock(). -->
+        <span id="sonido-bloqueado" class="status-pill status-pill--sonido-bloqueado" title="Haz clic en cualquier parte de la página para activar las alertas de sonido">
+            <i class="bi bi-volume-mute-fill"></i> Sonido bloqueado — haz clic aquí
+        </span>
         <span id="ws-status" class="status-pill status-pill--pending">
             <i class="bi bi-wifi"></i> Conectando…
         </span>
         <span id="engine-status" class="status-pill status-pill--pending">
             <i class="bi bi-cpu"></i> Motor de Liberación: verificando…
         </span>
+        <span id="cfdi-status" class="status-pill status-pill--pending">
+            <i class="bi bi-file-earmark-check"></i> CFDI Watcher: verificando…
+        </span>
+        <!-- Cada intento de reproducción (éxito o fallo) queda en
+             localStorage vía SoundManager (ver sound-manager.js) — permite
+             revisar qué pasó con la alerta de solicitudes desatendidas sin
+             haber tenido la consola abierta en el momento exacto. -->
+        <button type="button" id="ver-registro-sonido" class="status-pill status-pill--pending status-pill--button">
+            <i class="bi bi-clock-history"></i> Registro de sonido
+        </button>
     </div>
 </header>
 
-<!-- Letrero de solicitudes desatendidas (más de 7 min sin aceptar, o
+<!-- Letrero de solicitudes desatendidas (más de 3 min sin aceptar, o
      aceptadas sin atender) — ver evaluarAlertaDesatendidas() en
      facturacion.js. Oculto por defecto, visible en las dos vistas
      (Trabajo pendiente / Historial) para que sea difícil de ignorar. -->
 <div id="alerta-desatendidas" class="alerta-desatendidas is-hidden" role="alert">
     <i class="bi bi-exclamation-triangle-fill"></i>
     <span id="alerta-desatendidas-texto"></span>
+    <span id="alerta-desatendidas-sonido" class="alerta-desatendidas__sonido"></span>
 </div>
 
 <section class="kpi-bar kpi-bar--facturacion">
@@ -152,7 +171,6 @@
                         <th>Empresa</th>
                         <th>Fecha</th>
                         <th>Estado</th>
-                        <th>Esperando</th>
                     </tr>
                 </thead>
                 <tbody id="tabla-solicitudes-timbrado"></tbody>
@@ -182,8 +200,6 @@
                         <th>Fecha</th>
                         <th>Motivo</th>
                         <th>Estado</th>
-                        <th>Esperando</th>
-                        <th>Detalle</th>
                     </tr>
                 </thead>
                 <tbody id="tabla-solicitudes"></tbody>

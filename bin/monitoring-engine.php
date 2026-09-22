@@ -30,7 +30,7 @@ use App\Notifications\Consumers\Mattermost\MattermostHttpClient;
 use App\Notifications\Consumers\Mattermost\MattermostRouter;
 use App\Notifications\Consumers\Mattermost\Templates\GuideStampedTemplate;
 use App\Notifications\Consumers\Mattermost\Templates\TimbradoConcludedTemplate;
-use App\Notifications\Dispatcher\NotificationDispatcher;
+use App\Notifications\Dispatcher\NotificationDispatcher;use App\Notifications\Consumers\Trafico\TraficoWebhookConsumer;
 use App\Sync\HeartbeatStore;
 use App\Sync\SocketEventPublisher;
 use App\Sync\SourceRegistry;
@@ -135,6 +135,7 @@ $mattermostConsumer->registerTemplate(new GuideStampedTemplate());
 $mattermostConsumer->registerTemplate(new TimbradoConcludedTemplate());
 $dispatcher = new NotificationDispatcher();
 $dispatcher->registerConsumer($mattermostConsumer);
+$dispatcher->registerConsumer(new TraficoWebhookConsumer($config->get('TRAFICO_EVENTS_URL'), $config->get('TRAFICO_EVENTS_SECRET')));
 
 $solicitudTimbradoDetalleRepository = new SolicitudTimbradoDetalleRepository($atlasConnection);
 $sicretTimbradoOutPath = (string) $config->get('SICRET_TIMBRADO_OUT_PATH', '');
@@ -199,6 +200,7 @@ $timbradoConclusionWatcher = new TimbradoConclusionWatcher(
     $eventPublisher,
     $logger,
     $dispatcher,
+    $guiaEstadoTableroRepository,
 );
 
 // Un Watcher por proceso de negocio confirmable. Agregar uno nuevo es una

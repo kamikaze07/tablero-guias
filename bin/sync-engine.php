@@ -14,7 +14,7 @@ use App\Sync\SocketEventPublisher;
 use App\Sync\SourceRegistry;
 use App\Sync\SyncLogger;
 use App\Sync\SynchronizationEngine;
-use App\Notifications\Dispatcher\NotificationDispatcher;
+use App\Notifications\Dispatcher\NotificationDispatcher;use App\Notifications\Consumers\Trafico\TraficoWebhookConsumer;
 use App\Notifications\Consumers\Mattermost\MattermostConsumer;
 use App\Notifications\Consumers\Mattermost\MattermostRouter;
 use App\Notifications\Consumers\Mattermost\MattermostClient;
@@ -76,6 +76,7 @@ $mattermostConsumer->registerTemplate(new GuideStampFailedTemplate());
 
 $dispatcher = new NotificationDispatcher();
 $dispatcher->registerConsumer($mattermostConsumer);
+$dispatcher->registerConsumer(new TraficoWebhookConsumer($config->get('TRAFICO_EVENTS_URL'), $config->get('TRAFICO_EVENTS_SECRET')));
 
 $guideWatcher = new GuideWatcher(
     $sourceRegistry,

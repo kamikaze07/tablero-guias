@@ -1,6 +1,41 @@
 import SoundManager from './sound-manager.js';
+import { logoForSource } from './logo-source.js';
+import { watchHeartbeat } from './heartbeat-status.js';
 
 const soundManager = new SoundManager();
+
+const sonidoBloqueadoEl = document.getElementById('sonido-bloqueado');
+soundManager.onUnlock(() => sonidoBloqueadoEl?.remove());
+
+// Contador en vivo junto al letrero rojo, más el botón de "Registro de
+// sonido" en el header (lee lo que SoundManager ya persiste en
+// localStorage) — agregado porque la alerta de solicitudes desatendidas
+// se reportó como "no suena" sin que nadie tuviera la consola abierta en
+// el momento exacto; esto permite revisarlo después, sin depender de
+// coincidir con el momento en que ocurre.
+const alertaSonidoEl = document.getElementById('alerta-desatendidas-sonido');
+soundManager.onLog((stats) => {
+    if (alertaSonidoEl) {
+        alertaSonidoEl.textContent = `(🔊 ${stats.ok} ok / ${stats.fallidos} fallidos)`;
+    }
+});
+
+document.getElementById('ver-registro-sonido')?.addEventListener('click', () => {
+    const log = SoundManager.leerLog();
+
+    if (log.length === 0) {
+        alert('Registro de sonido vacío — todavía no se ha intentado reproducir ningún sonido en este navegador.');
+        return;
+    }
+
+    const lineas = log.slice().reverse().map((entry) => {
+        const hora = new Date(entry.t).toLocaleTimeString('es-MX', { hour12: false });
+        const estado = entry.ok ? 'OK' : `FALLÓ (${entry.motivo ?? 'sin motivo'})`;
+        return `${hora} — ${entry.key}: ${estado}`;
+    });
+
+    alert(`Últimos ${log.length} intentos de sonido (más reciente primero):\n\n${lineas.join('\n')}`);
+});
 
 const tablaSolicitudesEl = document.getElementById('tabla-solicitudes');
 const solicitudesEmptyEl = document.getElementById('solicitudes-empty');
@@ -22,9 +57,11 @@ const PANEL_SOLICITUDES_PER_PAGE = 15;
 // para las dos etapas: "pendiente sin aceptar" (created_at) y "aceptada
 // sin atender" (resolved_at, mientras el estado siga en progreso). Se
 // revisa cada ALERTA_INTERVALO_MS, y mientras haya algo que alertar sonará
-// en cada tick (repetición a propósito, no solo una vez).
-const ALERTA_UMBRAL_MINUTOS = 7;
-const ALERTA_INTERVALO_MS = 10000;
+// en cada tick (repetición a propósito, no solo una vez — pedido
+// explícito: cada 5s, con la alarma dedicada playDelayAlert(), ver
+// SoundManager). Bajado de 7 a 3 minutos por pedido de Facturación.
+const ALERTA_UMBRAL_MINUTOS = 3;
+const ALERTA_INTERVALO_MS = 5000;
 
 // Estados "aceptada pero todavía en progreso" por flujo — nunca se alerta
 // sobre algo ya resuelto (RECHAZADA/COMPLETADA/TIMBRADO), mismo criterio
@@ -76,21 +113,6 @@ function formatFecha(value) {
     return escapeHtml(date.toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }));
 }
 
-function formatEspera(minutos) {
-    if (minutos === null || minutos === undefined) {
-        return '—';
-    }
-
-    if (minutos < 60) {
-        return `${minutos} min`;
-    }
-
-    const horas = Math.floor(minutos / 60);
-    const resto = minutos % 60;
-
-    return `${horas} h ${resto} min`;
-}
-
 function claseEspera(minutos) {
     if (minutos === null || minutos === undefined) {
         return '';
@@ -108,9 +130,16 @@ function claseEspera(minutos) {
 }
 
 function empresaLabel(source) {
-    const value = String(source ?? '').toLowerCase();
+    return logoForSource(source).alt;
+}
 
-    return value.includes('gero') ? 'GERO' : 'FORSIS';
+// Logo de la empresa (FORSIS/GERO) en vez de la etiqueta en texto — solo
+// para los paneles de "Solicitudes" (Timbrado/Liberación); el Historial
+// sigue mostrando el texto vía empresaLabel().
+function celdaEmpresaLogo(source) {
+    const logo = logoForSource(source);
+
+    return `<img class="empresa-logo empresa-logo--${logo.modifier}" src="${logo.src}" alt="${logo.alt}" title="${logo.alt}" loading="lazy">`;
 }
 
 function setTextWithBump(el, value) {
@@ -178,90 +207,239 @@ function celdaCliente(cliente) {
         : '<span class="text-muted">—</span>';
 }
 
-// Celda de Ruta (Origen → Destino, ya con localidad incluida — ver
-// App\Timbrado\RutaLookup) compartida por ambos paneles de solicitudes.
-function celdaRuta(origen, destino) {
-    if (!origen && !destino) {
+// --- Agrupación por lote (solicitud_id) ---
+//
+// Los endpoints devuelven una fila POR GUÍA (App\Liberacion\
+// SolicitudLiberacionRepository::listarConDetalleGuia() hace JOIN con
+// solicitud_liberacion_detalle, N:M solicitud↔guía). Antes se listaba tal
+// cual: una solicitud de 6 guías aparecía como 6 filas idénticas salvo el
+// folio. Facturación pidió que se agrupe como se solicitó: una fila por
+// solicitud_id, con sus guías adentro.
+//
+// Los campos de la cabecera de la solicitud (estado, motivo/solicitante,
+// created_at/resolved_at, tiempo_espera_minutos, error_reason) SÍ son
+// idénticos en todas las filas del mismo solicitud_id (vienen de la
+// tabla cabecera, repetidos por el JOIN) — se puede tomar cualquiera. Los
+// campos por-guía (cliente, ruta, operador, contenedor, fecha, source) NO
+// están garantizados idénticos dentro de un mismo lote (se resuelven por
+// num_guia vía lookups a SICRET) — de ahí valoresUnicos()/celdaCompartida().
+function agruparPorSolicitud(filas) {
+    const grupos = new Map();
+
+    filas.forEach((fila) => {
+        if (!grupos.has(fila.solicitud_id)) {
+            grupos.set(fila.solicitud_id, { ...fila, guias: [] });
+        }
+
+        grupos.get(fila.solicitud_id).guias.push(fila);
+    });
+
+    return Array.from(grupos.values());
+}
+
+// Valores distintos y no vacíos de un campo entre las guías de un lote,
+// en el orden en que aparecen.
+function valoresUnicos(guias, campo) {
+    const vistos = new Set();
+    const valores = [];
+
+    guias.forEach((guia) => {
+        const valor = guia[campo];
+
+        if (valor && !vistos.has(valor)) {
+            vistos.add(valor);
+            valores.push(valor);
+        }
+    });
+
+    return valores;
+}
+
+// Celda para un campo "compartido" del lote (cliente, ruta, operador,
+// empresa, fecha): normalmente coincide en todas las guías de una misma
+// solicitud; si llega a variar se muestra el primer valor + un contador
+// con el detalle completo en el title, en vez de ocultar la diferencia.
+function celdaCompartida(valores, render) {
+    if (valores.length === 0) {
         return '<span class="text-muted">—</span>';
     }
 
-    const texto = `${origen || 'N/A'} → ${destino || 'N/A'}`;
+    if (valores.length === 1) {
+        return render(valores[0]);
+    }
 
-    return `<span class="ruta-cliente-col" title="${escapeHtml(texto)}">${escapeHtml(texto)}</span>`;
+    const title = escapeHtml(valores.join(' · '));
+
+    return `<span title="${title}">${render(valores[0])} <span class="badge text-bg-secondary">+${valores.length - 1}</span></span>`;
+}
+
+const MAX_GUIAS_VISIBLES_LOTE = 4;
+
+// Celda de guías del lote — una línea por guía (folio), para que
+// Contenedor (celdaContenedorLote) quede alineado guía-por-guía en el
+// mismo orden. Corta a MAX_GUIAS_VISIBLES_LOTE para no disparar el alto
+// de la fila con lotes grandes; el resto queda accesible en el title.
+function celdaGuiasLote(solicitudId, guias) {
+    const visibles = guias.slice(0, MAX_GUIAS_VISIBLES_LOTE);
+    const restantes = guias.length - visibles.length;
+
+    let lineas = visibles.map((g) => `<div class="lote-linea"><strong>${escapeHtml(g.num_guia)}</strong></div>`).join('');
+
+    if (restantes > 0) {
+        const title = guias.slice(MAX_GUIAS_VISIBLES_LOTE).map((g) => g.num_guia).join(', ');
+        lineas += `<div class="lote-linea text-muted small" title="${escapeHtml(title)}">+${restantes} más</div>`;
+    }
+
+    const plural = guias.length === 1 ? 'guía' : 'guías';
+
+    return `<div class="lote-lista">${lineas}</div>`
+         + `<div class="text-muted small">Lote #${solicitudId} · ${guias.length} ${plural}</div>`;
+}
+
+// Contenedor por guía, en el mismo orden/recorte que celdaGuiasLote() —
+// a diferencia de cliente/ruta/operador, el contenedor SÍ suele ser
+// distinto por guía dentro del mismo lote, así que aquí no se "compacta"
+// a un valor único, se lista igual que las guías.
+function celdaContenedorLote(guias) {
+    const visibles = guias.slice(0, MAX_GUIAS_VISIBLES_LOTE);
+    const restantes = guias.length - visibles.length;
+
+    let lineas = visibles.map((g) => `<div class="lote-linea">${celdaContenedor(g.contenedor)}</div>`).join('');
+
+    if (restantes > 0) {
+        lineas += '<div class="lote-linea">&nbsp;</div>';
+    }
+
+    return `<div class="lote-lista">${lineas}</div>`;
+}
+
+// Combinaciones distintas de Origen → Destino dentro del lote.
+function celdaRutaLote(guias) {
+    const vistos = new Set();
+    const combos = [];
+
+    guias.forEach((guia) => {
+        if (!guia.ruta_origen && !guia.ruta_destino) {
+            return;
+        }
+
+        const texto = `${guia.ruta_origen || 'N/A'} → ${guia.ruta_destino || 'N/A'}`;
+
+        if (!vistos.has(texto)) {
+            vistos.add(texto);
+            combos.push(texto);
+        }
+    });
+
+    return celdaCompartida(combos, (texto) => `<span class="ruta-cliente-col" title="${escapeHtml(texto)}">${escapeHtml(texto)}</span>`);
+}
+
+// Combinaciones distintas de Operador (+ solicitante) dentro del lote.
+function celdaOperadorLote(guias) {
+    const vistos = new Set();
+    const combos = [];
+
+    guias.forEach((guia) => {
+        if (!guia.operador && !guia.autorizo) {
+            return;
+        }
+
+        const key = `${guia.operador || ''} ${guia.autorizo || ''}`;
+
+        if (!vistos.has(key)) {
+            vistos.add(key);
+            combos.push(guia);
+        }
+    });
+
+    if (combos.length === 0) {
+        return '<span class="text-muted">—</span>';
+    }
+
+    const primero = celdaOperadorConSolicitante(combos[0].operador, combos[0].autorizo);
+
+    if (combos.length === 1) {
+        return primero;
+    }
+
+    const title = escapeHtml(combos.map((g) => `${g.operador || '—'} (Solicitó: ${g.autorizo || '—'})`).join(' · '));
+
+    return `<div>${primero}<span class="badge text-bg-secondary" title="${title}">+${combos.length - 1}</span></div>`;
 }
 
 function renderSolicitudes(payload) {
     const filas = payload.data ?? [];
     datosSolicitudesLiberacion = filas;
 
+    const grupos = agruparPorSolicitud(filas);
+
     tablaSolicitudesEl.innerHTML = '';
 
-    filas.forEach((fila) => {
+    grupos.forEach((grupo) => {
         const tr = document.createElement('tr');
-        tr.className = claseEspera(fila.tiempo_espera_minutos);
-        tr.dataset.solicitudId = fila.solicitud_id;
+        tr.className = claseEspera(grupo.tiempo_espera_minutos);
+        tr.dataset.solicitudId = grupo.solicitud_id;
 
-        const estadoInfo = ESTADO_LABELS[fila.estado] ?? { label: fila.estado, clase: 'badge text-bg-secondary' };
-        const detalleHtml = fila.error_reason
-            ? `<span class="text-danger small" title="${escapeHtml(fila.error_reason)}"><i class="bi bi-info-circle"></i> ver error</span>`
-            : '—';
+        const estadoInfo = ESTADO_LABELS[grupo.estado] ?? { label: grupo.estado, clase: 'badge text-bg-secondary' };
+        // Antes columna "Detalle" aparte; ahora, si hay error_reason (p. ej.
+        // RECHAZADA/ERROR), se ve en el title del propio badge de Estado en
+        // vez de ocupar una columna completa solo para eso.
+        const estadoTitle = grupo.error_reason ? ` title="${escapeHtml(grupo.error_reason)}"` : '';
 
         tr.innerHTML = `
-            <td><strong>${escapeHtml(fila.num_guia)}</strong><div class="text-muted small">Lote #${fila.solicitud_id}</div></td>
-            <td>${celdaContenedor(fila.contenedor)}</td>
-            <td>${celdaCliente(fila.cliente)}</td>
-            <td>${celdaRuta(fila.ruta_origen, fila.ruta_destino)}</td>
-            <td>${celdaOperadorConSolicitante(fila.operador, fila.autorizo)}</td>
-            <td>${empresaLabel(fila.source)}</td>
-            <td>${formatFecha(fila.fecha)}</td>
-            <td class="motivo-col" title="${escapeHtml(fila.motivo)}">${escapeHtml(fila.motivo)}</td>
-            <td><span class="${estadoInfo.clase}">${estadoInfo.label}</span></td>
-            <td>${formatEspera(fila.tiempo_espera_minutos)}</td>
-            <td>${detalleHtml}</td>
+            <td>${celdaGuiasLote(grupo.solicitud_id, grupo.guias)}</td>
+            <td>${celdaContenedorLote(grupo.guias)}</td>
+            <td>${celdaCompartida(valoresUnicos(grupo.guias, 'cliente'), celdaCliente)}</td>
+            <td>${celdaRutaLote(grupo.guias)}</td>
+            <td>${celdaOperadorLote(grupo.guias)}</td>
+            <td>${celdaCompartida(valoresUnicos(grupo.guias, 'source'), celdaEmpresaLogo)}</td>
+            <td>${celdaCompartida(valoresUnicos(grupo.guias, 'fecha'), formatFecha)}</td>
+            <td class="motivo-col" title="${escapeHtml(grupo.motivo)}">${escapeHtml(grupo.motivo)}</td>
+            <td><span class="${estadoInfo.clase}"${estadoTitle}>${estadoInfo.label}${grupo.error_reason ? ' <i class="bi bi-info-circle"></i>' : ''}</span></td>
         `;
 
         tablaSolicitudesEl.appendChild(tr);
     });
 
-    setTextWithBump(countSolicitudesEl, filas.length);
-    solicitudesEmptyEl.classList.toggle('is-visible', filas.length === 0);
+    setTextWithBump(countSolicitudesEl, grupos.length);
+    solicitudesEmptyEl.classList.toggle('is-visible', grupos.length === 0);
 }
 
-// Vista por guía (antes era por lote: #id/Solicitante/Fecha/Guías/Estado,
-// sin mostrar el PR ni poder mostrar el Contenedor) — mismo endpoint
-// aplanado que ya usa Liberación (App\Timbrado\SolicitudTimbradoService::
-// listarConDetalleGuia()), para que el PR y el Contenedor de cada guía
-// del lote sean lo primero que se ve.
+// Vista por lote (agrupada por solicitud_id — ver agruparPorSolicitud())
+// sobre el mismo endpoint aplanado que ya usa Liberación (App\Timbrado\
+// SolicitudTimbradoService::listarConDetalleGuia()), para que el PR y el
+// Contenedor de cada guía del lote sean lo primero que se ve.
 function renderSolicitudesTimbrado(payload) {
     const filas = payload.data ?? [];
     datosSolicitudesTimbrado = filas;
 
+    const grupos = agruparPorSolicitud(filas);
+
     tablaSolicitudesTimbradoEl.innerHTML = '';
 
-    filas.forEach((fila) => {
+    grupos.forEach((grupo) => {
         const tr = document.createElement('tr');
-        tr.className = claseEspera(fila.tiempo_espera_minutos);
-        tr.dataset.solicitudId = fila.solicitud_id;
+        tr.className = claseEspera(grupo.tiempo_espera_minutos);
+        tr.dataset.solicitudId = grupo.solicitud_id;
 
-        const estadoInfo = ESTADO_LABELS[fila.estado] ?? { label: fila.estado, clase: 'badge text-bg-secondary' };
+        const estadoInfo = ESTADO_LABELS[grupo.estado] ?? { label: grupo.estado, clase: 'badge text-bg-secondary' };
 
         tr.innerHTML = `
-            <td><strong>${escapeHtml(fila.num_guia)}</strong><div class="text-muted small">Lote #${fila.solicitud_id}</div></td>
-            <td>${celdaContenedor(fila.contenedor)}</td>
-            <td>${celdaCliente(fila.cliente)}</td>
-            <td>${celdaRuta(fila.ruta_origen, fila.ruta_destino)}</td>
-            <td>${celdaOperadorConSolicitante(fila.operador, fila.autorizo)}</td>
-            <td>${empresaLabel(fila.source)}</td>
-            <td>${formatFecha(fila.fecha)}</td>
+            <td>${celdaGuiasLote(grupo.solicitud_id, grupo.guias)}</td>
+            <td>${celdaContenedorLote(grupo.guias)}</td>
+            <td>${celdaCompartida(valoresUnicos(grupo.guias, 'cliente'), celdaCliente)}</td>
+            <td>${celdaRutaLote(grupo.guias)}</td>
+            <td>${celdaOperadorLote(grupo.guias)}</td>
+            <td>${celdaCompartida(valoresUnicos(grupo.guias, 'source'), celdaEmpresaLogo)}</td>
+            <td>${celdaCompartida(valoresUnicos(grupo.guias, 'fecha'), formatFecha)}</td>
             <td><span class="${estadoInfo.clase}">${estadoInfo.label}</span></td>
-            <td>${formatEspera(fila.tiempo_espera_minutos)}</td>
         `;
 
         tablaSolicitudesTimbradoEl.appendChild(tr);
     });
 
-    setTextWithBump(countSolicitudesTimbradoEl, filas.length);
-    solicitudesTimbradoEmptyEl.classList.toggle('is-visible', filas.length === 0);
+    setTextWithBump(countSolicitudesTimbradoEl, grupos.length);
+    solicitudesTimbradoEmptyEl.classList.toggle('is-visible', grupos.length === 0);
 }
 
 function renderKpis(kpis) {
@@ -560,12 +738,15 @@ function contarVencidas(filas, estadosAceptada) {
 
 /**
  * Revisa ambos paneles y muestra/oculta el letrero de alerta. A propósito
- * se llama cada ALERTA_INTERVALO_MS (10s) sin importar si hubo un evento
+ * se llama cada ALERTA_INTERVALO_MS (5s) sin importar si hubo un evento
  * nuevo — el paso del tiempo por sí solo puede hacer que una solicitud
  * cruce el umbral, y antes de esto nada recalculaba tiempo_espera sin un
  * evento de WebSocket de por medio. Mientras haya algo que alertar, el
  * sonido se repite en cada tick (a propósito, para que sea difícil de
- * ignorar) — deja de sonar solo cuando ya no hay nada vencido.
+ * ignorar) — deja de sonar solo cuando ya no hay nada vencido. Usa
+ * playDelayAlert() (sirena dedicada a volumen máximo), NO playStampError():
+ * ese sonido es de "solicitud rechazada" y, compartido entre ambos
+ * significados, se reportó como imperceptible para esta alerta.
  */
 function evaluarAlertaDesatendidas() {
     const liberacion = contarVencidas(datosSolicitudesLiberacion, ESTADOS_ACEPTADA_LIBERACION);
@@ -594,7 +775,7 @@ function evaluarAlertaDesatendidas() {
 
     texto.textContent = `${partes.join(' · ')} — llevan más de ${ALERTA_UMBRAL_MINUTOS} min`;
     banner.classList.remove('is-hidden');
-    soundManager.playStampError();
+    soundManager.playDelayAlert();
 }
 
 function handleMessage(event) {
@@ -789,6 +970,18 @@ setInterval(tickClock, 1000);
 
 refreshEngineStatus();
 setInterval(refreshEngineStatus, 5000);
+
+// "timbrado-conclusion" (App\Monitoring\Timbrado\TimbradoConclusionWatcher,
+// registrado en bin/monitoring-engine.php) es el watcher que confirma que
+// el CFDI de una guía quedó completo (folioFiscal/idccp en facturas33) —
+// antes no había ninguna píldora para esto en este tablero.
+watchHeartbeat(document.getElementById('cfdi-status'), {
+    engine: 'timbrado-conclusion',
+    icon: 'bi-file-earmark-check',
+    activeLabel: 'CFDI Watcher: activo',
+    downLabel: 'CFDI Watcher: inactivo',
+    errorLabel: 'CFDI Watcher: con errores',
+});
 
 evaluarAlertaDesatendidas();
 setInterval(evaluarAlertaDesatendidas, ALERTA_INTERVALO_MS);

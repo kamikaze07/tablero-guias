@@ -27,7 +27,11 @@ services:
     env_file:
       - .env
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    networks:
+      - default
+      - forsis-comunicaciones
 
   db:
     image: mariadb:11
@@ -42,6 +46,20 @@ services:
       MARIADB_ROOT_PASSWORD: ${ATLAS_DB_ROOT_PASSWORD}
     volumes:
       - atlas-db-data:/var/lib/mysql
+    # Sin esto, cada reinicio del host (o de este stack) hacía que php/
+    # websocket/sync-engine/monitoring/daily-cutover arrancaran antes de
+    # que mariadb aceptara conexiones — 4-5 crashes en cascada
+    # (PDOException: Connection refused) por servicio hasta que
+    # `restart: unless-stopped` los reintentaba lo suficiente. Se
+    # autocorregía solo en menos de un minuto, pero ensuciaba los logs en
+    # cada boot. `healthcheck.sh` viene incluido en la imagen oficial de
+    # mariadb.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   websocket:
     build:
@@ -57,7 +75,8 @@ services:
     ports:
       - "${WEBSOCKET_PORT:-8098}:${WEBSOCKET_PORT:-8098}"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   sync-engine:
     build:
@@ -71,8 +90,13 @@ services:
     env_file:
       - .env
     depends_on:
-      - db
-      - websocket
+      db:
+        condition: service_healthy
+      websocket:
+        condition: service_started
+    networks:
+      - default
+      - forsis-comunicaciones
 
   monitoring:
     build:
@@ -91,8 +115,13 @@ services:
     env_file:
       - .env
     depends_on:
-      - db
-      - websocket
+      db:
+        condition: service_healthy
+      websocket:
+        condition: service_started
+    networks:
+      - default
+      - forsis-comunicaciones
 
   daily-cutover:
     build:
@@ -106,8 +135,15 @@ services:
     env_file:
       - .env
     depends_on:
-      - db
-      - websocket
+      db:
+        condition: service_healthy
+      websocket:
+        condition: service_started
 
 volumes:
   atlas-db-data:
+
+networks:
+  forsis-comunicaciones:
+    external: true
+    name: forsis-comunicaciones

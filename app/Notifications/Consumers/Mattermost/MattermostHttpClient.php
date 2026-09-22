@@ -26,6 +26,13 @@ class MattermostHttpClient implements MattermostClient
     public function sendMessage(string $channel, string $message): void
     {
         try {
+            if (str_contains($message, "\xC3\x83") || str_contains($message, "\xC3\x82")) {
+                $reparado = @mb_convert_encoding($message, 'ISO-8859-1', 'UTF-8');
+                if ($reparado !== false && mb_check_encoding($reparado, 'UTF-8')) {
+                    $message = $reparado;
+                }
+            }
+
             if (!empty($this->token) && !empty($this->baseUrl)) {
                 $this->sendViaRestApi($channel, $message);
             } else {

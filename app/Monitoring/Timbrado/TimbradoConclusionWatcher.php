@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Monitoring\Timbrado;
 
 use App\Domain\Events\TimbradoConcluded;
+use App\Liberacion\GuiaEstadoTableroRepository;
 use App\Liberacion\GuiaLookupRepository;
 use App\Monitoring\Evidence\Evidence;
 use App\Monitoring\EvidenceWatcher;
@@ -36,6 +37,7 @@ final class TimbradoConclusionWatcher extends EvidenceWatcher
         private readonly EventPublisher $eventPublisher,
         private readonly SyncLogger $logger,
         private readonly ?NotificationDispatcher $dispatcher = null,
+        private readonly ?GuiaEstadoTableroRepository $guiaEstadoTableroRepository = null,
     ) {
     }
 
@@ -130,6 +132,23 @@ final class TimbradoConclusionWatcher extends EvidenceWatcher
             static fn (array $g): array => ['guia_id' => $g['guia_id'], 'factura_impresa' => $g['factura_impresa']],
             $guias,
         ));
+
+        // Mismo bug real (Sprint 9.2), esta vez sobre `guia_estado_tablero`
+        // en lugar de `solicitud_timbrado_detalle`: una solicitud del Motor
+        // de Timbrado Automático de trafico-system nunca pasa por
+        // ESPERANDO_TIMBRADO, así que TimbradoConfirmationWatcher — el
+        // único que hasta ahora escribía esta tabla — nunca se ejecuta para
+        // ella. Sin esto, la guía queda para siempre sin fila en
+        // `guia_estado_tablero` pese a estar timbrada y facturada de
+        // verdad: sin badge de "timbrada" en trafico-system y sin entrada
+        // de rescate en guia-historial.php (su bloque 2b exige justo esta
+        // fila). Se reutiliza marcarTimbradoDirecto() — mismo método que ya
+        // usa DirectStampingWatcher para el caso análogo de timbrado
+        // directo en SICRET — es idempotente si TimbradoConfirmationWatcher
+        // ya la había escrito antes (mismos valores).
+        foreach ($guias as $guia) {
+            $this->guiaEstadoTableroRepository?->marcarTimbradoDirecto($guia['guia_id'], $guia['factura_impresa']);
+        }
 
         $this->eventPublisher->publish(self::EVENTO_CONCLUIDO, [
             'solicitud_id' => $solicitudId,

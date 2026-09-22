@@ -13,10 +13,9 @@ final class GuideWatcher implements Watcher
 {
     private const TABLE = 'guias';
     private const BATCH_SIZE = 500;
+    public const RECONCILIATION_LOOKBACK_NUM = 1000;
+    public const RECONCILIATION_LOOKBACK_HOURS = 24;
 
-    // Códigos de error de MySQL/MariaDB que indican una conexión muerta
-    // (no un problema con la consulta en sí): 2006 = server has gone
-    // away, 2013 = lost connection during query.
     private const CONNECTION_LOST_ERROR_CODES = [2006, 2013];
 
     private const COLUMNS = <<<'SQL'
@@ -54,26 +53,24 @@ final class GuideWatcher implements Watcher
         $isFirstRun = $checkpoint === 0;
         $synced = 0;
 
+        // 1. Escaneo Primario de Guías Nuevas (num > checkpoint)
         do {
             $rows = $this->fetchBatch($source, $checkpoint, $isFirstRun);
 
             foreach ($rows as $row) {
                 $record = GuiaRecord::fromSourceRow($source->name(), $row);
-                $atlasId = $this->guiaRepository->insert($record);
+                $result = $this->guiaRepository->saveOrUpdate($record);
 
-                // El checkpoint solo avanza tras confirmar la inserción
-                // (o confirmar que el registro ya existía en ATLAS).
-                $checkpoint = $record->sourceNum;
+                $checkpoint = max($checkpoint, $record->sourceNum);
                 $this->checkpointStore->update($source->name(), $checkpoint);
 
-                if ($atlasId !== null) {
+                if ($this->handleSyncResult($result, $record)) {
                     $synced++;
-                    $this->publishDetected($atlasId, $record);
                 }
             }
 
             if ($rows !== []) {
-                $this->logger->info('Lote sincronizado', [
+                $this->logger->info('Lote de guías sincronizado (Primary Scan)', [
                     'source' => $source->name(),
                     'lote' => count($rows),
                     'checkpoint' => $checkpoint,
@@ -81,7 +78,57 @@ final class GuideWatcher implements Watcher
             }
         } while (count($rows) === self::BATCH_SIZE);
 
+        // 2. Reconciliación Acotada de Números Reutilizados / Cambios (num <= checkpoint)
+        if ($checkpoint > 0) {
+            $synced += $this->reconcileSource($source, $checkpoint);
+        }
+
         return $synced;
+    }
+
+    private function reconcileSource(Source $source, int $checkpoint): int
+    {
+        $minNum = max(1, $checkpoint - self::RECONCILIATION_LOOKBACK_NUM);
+        $sinceTimestamp = (new \DateTimeImmutable(sprintf('-%d hours', self::RECONCILIATION_LOOKBACK_HOURS)))->format('Y-m-d H:i:s');
+
+        $rows = $this->fetchReconciliationBatch($source, $minNum, $checkpoint, $sinceTimestamp);
+        $synced = 0;
+
+        foreach ($rows as $row) {
+            $record = GuiaRecord::fromSourceRow($source->name(), $row);
+            $result = $this->guiaRepository->saveOrUpdate($record);
+
+            if ($this->handleSyncResult($result, $record)) {
+                $synced++;
+                $this->logger->info('Reconciliación detectó cambio/reutilización en guía', [
+                    'status' => $result->status->value,
+                    'source' => $record->source,
+                    'source_num' => $record->sourceNum,
+                    'num_guia' => $record->numGuia,
+                    'fecha_c' => $record->fechaC->format('Y-m-d H:i:s'),
+                ]);
+            }
+        }
+
+        return $synced;
+    }
+
+    /**
+     * Procesa el resultado de la sincronización y emite eventos diferenciados según el tipo de cambio.
+     */
+    private function handleSyncResult(SyncResult $result, GuiaRecord $record): bool
+    {
+        if ($result->isUnchanged() || $result->atlasId === null) {
+            return false;
+        }
+
+        if ($result->isInserted() || $result->isReusedReplaced()) {
+            $this->publishDetected($result->atlasId, $record);
+        } elseif ($result->isUpdated()) {
+            $this->publishUpdated($result->atlasId, $record);
+        }
+
+        return true;
     }
 
     private function publishDetected(int $atlasId, GuiaRecord $record): void
@@ -96,6 +143,7 @@ final class GuideWatcher implements Watcher
             'servicio' => $record->servicio,
             'placas1' => $record->placas1,
             'estado' => $record->estado,
+            'operador' => $record->operador,
         ]);
 
         if ($this->dispatcher) {
@@ -107,6 +155,22 @@ final class GuideWatcher implements Watcher
                 'estado' => $record->estado,
             ]));
         }
+    }
+
+    private function publishUpdated(int $atlasId, GuiaRecord $record): void
+    {
+        $this->eventPublisher->publish('guia.actualizada', [
+            'id' => $atlasId,
+            'source' => $record->source,
+            'num_guia' => $record->numGuia,
+            'fecha' => $record->fecha->format('Y-m-d H:i:s'),
+            'nombre' => $record->nombre,
+            'tipo' => $record->tipo,
+            'servicio' => $record->servicio,
+            'placas1' => $record->placas1,
+            'estado' => $record->estado,
+            'operador' => $record->operador,
+        ]);
     }
 
     /** @return array<int, array<string, mixed>> */
@@ -127,6 +191,27 @@ final class GuideWatcher implements Watcher
             $source->reconnect();
 
             return $this->runFetchBatch($source, $checkpoint, $isFirstRun);
+        }
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function fetchReconciliationBatch(Source $source, int $minNum, int $checkpoint, string $sinceTimestamp): array
+    {
+        try {
+            return $this->runFetchReconciliationBatch($source, $minNum, $checkpoint, $sinceTimestamp);
+        } catch (PDOException $e) {
+            if (!$this->isConnectionLost($e)) {
+                throw $e;
+            }
+
+            $this->logger->error('Conexión perdida con la fuente durante reconciliación, reconectando', [
+                'source' => $source->name(),
+                'error' => $e->getMessage(),
+            ]);
+
+            $source->reconnect();
+
+            return $this->runFetchReconciliationBatch($source, $minNum, $checkpoint, $sinceTimestamp);
         }
     }
 
@@ -154,6 +239,22 @@ final class GuideWatcher implements Watcher
         }
 
         $stmt->bindValue(':batch', self::BATCH_SIZE, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function runFetchReconciliationBatch(Source $source, int $minNum, int $checkpoint, string $sinceTimestamp): array
+    {
+        $sql = 'SELECT ' . self::COLUMNS . ' FROM ' . self::TABLE . '
+                WHERE num >= :min_num AND num <= :checkpoint AND fecha_c >= :since
+                ORDER BY num ASC';
+
+        $stmt = $source->connection()->prepare($sql);
+        $stmt->bindValue(':min_num', $minNum, PDO::PARAM_INT);
+        $stmt->bindValue(':checkpoint', $checkpoint, PDO::PARAM_INT);
+        $stmt->bindValue(':since', $sinceTimestamp, PDO::PARAM_STR);
         $stmt->execute();
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);

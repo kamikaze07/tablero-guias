@@ -153,14 +153,46 @@ body {
     background: rgba(239, 68, 68, .12);
 }
 
+/* Activo pero con la última corrida en error (ver watchHeartbeat() en
+   heartbeat-status.js) — distinto de --down: el proceso sigue vivo. */
+.status-pill--warning {
+    color: var(--c-liberacion);
+    border-color: rgba(253, 126, 20, .35);
+    background: rgba(253, 126, 20, .12);
+}
+
 .status-pill--pending {
     color: var(--text-muted);
+}
+
+.status-pill--button {
+    font-family: inherit;
+    cursor: pointer;
 }
 
 .status-pill--disabled {
     color: var(--text-muted);
     opacity: .55;
     font-style: italic;
+}
+
+/* El pill gris (--pending) se perdía entre "Conectando…"/"verificando…"
+   — en pantallas desatendidas nadie hacía el click que activa el audio,
+   así que las alertas de sonido (incl. la de solicitudes desatendidas,
+   ver alerta-desatendidas en facturacion.css) nunca sonaban sin que nada
+   se viera "roto". Pulsante y con color propio a propósito, para que se
+   note que hace falta una acción del usuario. */
+.status-pill--sonido-bloqueado {
+    color: #fff;
+    border-color: var(--c-liberacion);
+    background: var(--c-liberacion);
+    cursor: pointer;
+    animation: sonido-bloqueado-pulso 1.4s ease-in-out infinite;
+}
+
+@keyframes sonido-bloqueado-pulso {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(253, 126, 20, .55); }
+    50% { box-shadow: 0 0 0 6px rgba(253, 126, 20, 0); }
 }
 
 @keyframes pulse-dot {
@@ -173,7 +205,7 @@ body {
 .kpi-bar {
     flex: 0 0 auto;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: .75rem;
     padding: .75rem 1.5rem;
 }

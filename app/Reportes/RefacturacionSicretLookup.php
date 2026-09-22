@@ -36,7 +36,7 @@ final class RefacturacionSicretLookup
 
     /**
      * @param array<int, array{num_guia: string, source: string, despues_de: string}> $items
-     * @return array<string, array{folio: string, folioFiscal: ?string}> "source|num_guia" => datos
+     * @return array<string, array{folio: string, folioFiscal: ?string}> clave() => datos
      */
     public function porGuia(array $items): array
     {
@@ -52,11 +52,31 @@ final class RefacturacionSicretLookup
             $dato = $this->consultarFacturaNueva($source, $item['num_guia'], $item['despues_de']);
 
             if ($dato !== null) {
-                $resultado[$item['source'] . '|' . $item['num_guia']] = $dato;
+                $resultado[self::clave($item)] = $dato;
             }
         }
 
         return $resultado;
+    }
+
+    /**
+     * Bug real (confirmado 2026-08-10, PR-226593/594): una guía puede
+     * liberarse y refacturarse más de una vez en su historia. Antes esta
+     * clave era solo "source|num_guia" — con dos solicitudes pendientes
+     * para la MISMA guía en el mismo lote de porGuia(), la segunda pisaba
+     * el resultado de la primera en $resultado, y ambas solicitudes
+     * terminaban persistiendo (write-once, ver
+     * GuiasLiberadasReportRepository::persistirRefacturacion()) el mismo
+     * CFDI "nuevo" incorrecto para una de las dos. Se agrega `despues_de`
+     * (el `confirmed_at` de ESA solicitud específica) a la clave para que
+     * cada solicitud resuelva y persista su propio resultado sin pisar el
+     * de otra liberación anterior/posterior de la misma guía.
+     *
+     * @param array{num_guia: string, source: string, despues_de: string} $item
+     */
+    public static function clave(array $item): string
+    {
+        return $item['source'] . '|' . $item['num_guia'] . '|' . $item['despues_de'];
     }
 
     /**

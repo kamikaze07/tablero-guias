@@ -567,7 +567,7 @@ final class SolicitudLiberacionService
                 ? $this->sicretEstatusLookup->estatusActual($source, $datos['num_guia'])
                 : null;
 
-            if ($source === null || !$this->sicretEstatusLookup->esAsignadaAlOperador($estatusEnVivo)) {
+            if ($source === null || !$this->sicretEstatusLookup->esDisponibleParaLiberacion($estatusEnVivo)) {
                 $noDisponibles[$datos['num_guia']] = $datos['estado'];
             }
         }

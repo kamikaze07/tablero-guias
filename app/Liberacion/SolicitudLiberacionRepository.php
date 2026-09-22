@@ -198,6 +198,7 @@ final class SolicitudLiberacionRepository
 
         $stmt = $this->connection->prepare(
             "SELECT sl.id AS solicitud_id, sl.origen, sl.motivo, sl.estado, sl.created_at,
+                    (SELECT h.actor FROM solicitud_liberacion_historial h WHERE h.solicitud_id = sl.id AND h.evento = 'CREADA' ORDER BY h.id ASC LIMIT 1) AS solicitante,
                     sl.resolved_at, sl.resolved_by, sl.error_reason,
                     TIMESTAMPDIFF(MINUTE, sl.created_at, NOW()) AS tiempo_espera_minutos,
                     d.guia_id, d.num_guia,
@@ -206,7 +207,8 @@ final class SolicitudLiberacionRepository
              JOIN solicitud_liberacion_detalle d ON d.solicitud_id = sl.id
              JOIN guias g ON g.id = d.guia_id
              {$where}
-             ORDER BY {$orderBy} {$orderDir}, sl.id DESC
+             ORDER BY (sl.estado IN ('" . self::ESTADO_PENDIENTE . "', '" . self::ESTADO_APROBADA . "', '" . self::ESTADO_EJECUTANDO . "')) DESC,
+                      {$orderBy} {$orderDir}, sl.id DESC
              LIMIT :limit OFFSET :offset"
         );
 

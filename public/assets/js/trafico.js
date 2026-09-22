@@ -1,4 +1,6 @@
 import SoundManager from './sound-manager.js';
+import { logoForSource } from './logo-source.js';
+import { watchHeartbeat } from './heartbeat-status.js';
 
 const panels = {
     generadas: {
@@ -46,16 +48,6 @@ function formatFecha(value) {
     }
 
     return escapeHtml(date.toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }));
-}
-
-function logoForSource(source) {
-    const value = String(source ?? '').toLowerCase();
-
-    if (value.includes('gero')) {
-        return { src: '/assets/gero-logo.svg', alt: 'GERO', modifier: 'gero' };
-    }
-
-    return { src: '/assets/forsis-logo.svg', alt: 'FORSIS', modifier: 'forsis' };
 }
 
 function setTextWithBump(el, value) {
@@ -159,6 +151,41 @@ function renderInitialBucket(guias, targetPanel, stateClass) {
     updateCounts();
 }
 
+/**
+ * Repinta los 4 paneles desde App\Dashboard\GuiaBoardRepository::boardState()
+ * (la misma fuente que usa la carga inicial de la página) — se llama al
+ * reconectar el WebSocket.
+ *
+ * Bug real (2026-08-11): `connect()` reintenta la conexión tras un `close`
+ * pero nunca vuelve a sincronizar el estado — cualquier evento publicado
+ * mientras el socket estuvo caído (un `guia.timbrado_solicitado` o
+ * `guia.timbrado_concluido` de por medio, por ejemplo) se perdía para
+ * siempre en esa pestaña: la tarjeta se quedaba en el panel y con la
+ * resolución que tenía justo antes del corte, sin forma de corregirse sin
+ * un F5 manual. Un tablero de operación queda abierto horas o días, así
+ * que un corte de WebSocket (deploy, red, laptop en suspensión) es
+ * cuestión de tiempo, no un caso raro.
+ */
+async function reconcileBoard() {
+    try {
+        const response = await fetch('/api/trafico-board.php', { cache: 'no-store' });
+        const boardState = await response.json();
+
+        Object.values(panels).forEach((panel) => {
+            panel.cardsEl.innerHTML = '';
+        });
+
+        renderInitialGuias(boardState.generadas ?? []);
+        renderInitialBucket(boardState.solicitudes_timbrado ?? [], panels.solicitudes_timbrado, 'liberacion');
+        renderInitialBucket(boardState.liberacion ?? [], panels.liberacion, 'liberacion');
+        renderInitialBucket(boardState.timbrado ?? [], panels.timbrado, 'timbrado');
+    } catch (e) {
+        // Best-effort: si falla, el tablero se queda con lo que tenía en
+        // memoria (mismo comportamiento que antes de este fix) en vez de
+        // vaciarse a medias.
+    }
+}
+
 function addNewGuia(guia) {
     const card = buildCard(guia, 'generada');
     card.classList.add('guia-card--enter', 'guia-card--new');
@@ -225,13 +252,36 @@ function updateCardResult(card, { tipo, resultado, fecha, usuario, observaciones
     `;
 }
 
+function updateCardData(card, guia) {
+    if (!card || !guia) return;
+    const accent = card.classList.contains('guia-card--liberacion') ? 'liberacion' : (card.classList.contains('guia-card--timbrado') ? 'timbrado' : 'generada');
+    const fresh = buildCard(guia, accent);
+    const resolution = card.querySelector('.guia-card__resolution');
+    card.innerHTML = fresh.innerHTML;
+    if (resolution) {
+        card.appendChild(resolution);
+    }
+}
+
 function handleMessage(event) {
     const message = JSON.parse(event.data);
     const evName = message.event;
 
     if (evName === 'guia.detectada') {
-        addNewGuia(message.payload);
+        const id = message.payload.id;
+        const existingCard = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+        if (existingCard) {
+            updateCardData(existingCard, message.payload);
+        } else {
+            addNewGuia(message.payload);
+        }
         fetchKpis();
+    } else if (evName === 'guia.actualizada') {
+        const id = message.payload.id;
+        const existingCard = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
+        if (existingCard) {
+            updateCardData(existingCard, message.payload);
+        }
     } else if (evName === 'guia.timbrado_solicitado') {
         moveCards(message.payload.guias, panels.solicitudes_timbrado, 'liberacion'); // Use 'liberacion' as warning-color for pending
         soundManager.playReleaseRequested();
@@ -277,15 +327,24 @@ function handleMessage(event) {
 
         fetchKpis();
     } else if (evName === 'guia.timbrado_completado' || evName === 'guia.timbrado_concluido') {
-        // Puente temporal con el timbrado manual de SICRET (ver
-        // App\Monitoring\Timbrado\TimbradoConfirmationWatcher) — la tarjeta
-        // ya está en "Respuesta de Solicitudes" desde que se aprobó; aquí solo
-        // se actualiza su resolución con la confirmación real de SICRET.
-        // guia.timbrado_concluido (App\Monitoring\Timbrado\
-        // TimbradoConclusionWatcher) es la confirmación definitiva y puede
-        // llegar sin que timbrado_completado se haya disparado nunca (ver
-        // docblock de TimbradoConclusionEvidenceSource::buscar()) — sin
-        // este caso, esas tarjetas se quedaban mostrando solo "Aprobada".
+        // Bug real (2026-08-11): este bloque asumía que la tarjeta YA
+        // estaba en "Respuesta de Solicitudes" porque un
+        // 'solicitud_timbrado.aprobada' anterior ya la habría movido con
+        // moveCards() — cierto para el timbrado manual de SICRET (ver
+        // App\Monitoring\Timbrado\TimbradoConfirmationWatcher), pero el
+        // Motor de Timbrado Automático de trafico-system concluye la
+        // solicitud sin ningún paso de aprobación humana (ver docblock de
+        // App\Monitoring\Timbrado\TimbradoConclusionEvidenceSource::
+        // buscar() — "una solicitud puede llegar a CONCLUIDA sin pasar
+        // nunca por TIMBRADO"), así que ese evento nunca llega y la
+        // tarjeta se quedaba en vivo en "Solicitudes de Timbrado" para
+        // siempre — solo se corregía con un F5 (el render inicial sí
+        // bucketiza por estado real). Se agrega el mismo moveCards() que
+        // ya usa la rama de 'aprobada', antes de actualizar la resolución
+        // — es seguro llamarlo aunque la tarjeta ya estuviera en el panel
+        // correcto (moveCards() solo la reordena/reclasifica).
+        moveCards(message.payload.guias, panels.timbrado, 'timbrado');
+
         message.payload.guias.forEach((g) => {
             const id = g.id || g.guia_id;
             const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
@@ -317,6 +376,15 @@ function handleMessage(event) {
             }
         });
     } else if (evName === 'guia.liberacion_completada') {
+        // Misma corrección defensiva que timbrado_completado/concluido:
+        // hoy Liberación siempre pasa por 'solicitud_liberacion.aprobada'
+        // (aprobación humana), así que este moveCards() es normalmente un
+        // no-op sobre una tarjeta que ya está en el panel correcto — pero
+        // asumirlo sin comprobarlo es la misma suposición frágil que ya
+        // falló para Timbrado en cuanto apareció una vía sin aprobación
+        // humana de por medio.
+        moveCards(message.payload.guias, panels.timbrado, 'timbrado');
+
         message.payload.guias.forEach((g) => {
             const id = g.id || g.guia_id;
             const card = document.querySelector(`.guia-card[data-guia-id="${id}"]`);
@@ -374,12 +442,22 @@ function setWsStatus(state) {
     }
 }
 
+let esReconexion = false;
+
 function connect() {
     setWsStatus('pending');
 
     const socket = new WebSocket(`ws://${window.location.hostname}:${WS_PORT}`);
 
-    socket.addEventListener('open', () => setWsStatus('ok'));
+    socket.addEventListener('open', () => {
+        setWsStatus('ok');
+
+        if (esReconexion) {
+            reconcileBoard();
+        }
+
+        esReconexion = true;
+    });
     socket.addEventListener('message', handleMessage);
 
     socket.addEventListener('close', () => {
@@ -425,6 +503,9 @@ function tickClock() {
 
 const soundManager = new SoundManager();
 
+const sonidoBloqueadoEl = document.getElementById('sonido-bloqueado');
+soundManager.onUnlock(() => sonidoBloqueadoEl?.remove());
+
 const initialGuias = JSON.parse(document.getElementById('initial-guias').textContent || '[]');
 renderInitialGuias(initialGuias);
 
@@ -442,5 +523,18 @@ setInterval(tickClock, 1000);
 
 refreshEngineStatus();
 setInterval(refreshEngineStatus, 5000);
+
+// "timbrado-conclusion" (App\Monitoring\Timbrado\TimbradoConclusionWatcher,
+// registrado en bin/monitoring-engine.php) es el watcher que confirma que
+// el CFDI de una guía quedó completo (folioFiscal/idccp en facturas33) —
+// antes la píldora "CFDI Watcher: Próximamente" estaba deshabilitada
+// porque ese componente no existía; ya está implementado y corriendo.
+watchHeartbeat(document.getElementById('cfdi-status'), {
+    engine: 'timbrado-conclusion',
+    icon: 'bi-file-earmark-check',
+    activeLabel: 'CFDI Watcher: activo',
+    downLabel: 'CFDI Watcher: inactivo',
+    errorLabel: 'CFDI Watcher: con errores',
+});
 
 connect();

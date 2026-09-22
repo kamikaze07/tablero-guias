@@ -21,10 +21,23 @@ final class RutaBloque
         $bloques = [];
 
         foreach ($rutas as $ruta) {
-            $bloques[] = sprintf("**%s → %s:**\n%s", $ruta['origen'], $ruta['destino'], GuiaLinea::lista($ruta['guias']));
+            $origen = self::sanearTexto((string) ($ruta['origen'] ?? ''));
+            $destino = self::sanearTexto((string) ($ruta['destino'] ?? ''));
+            $bloques[] = sprintf("**%s → %s:**\n%s", $origen, $destino, GuiaLinea::lista($ruta['guias']));
         }
 
         return implode("\n\n", $bloques);
+    }
+
+    private static function sanearTexto(string $texto): string
+    {
+        if (str_contains($texto, "\xC3\x83") || str_contains($texto, "\xC3\x82")) {
+            $reparado = @mb_convert_encoding($texto, 'Windows-1252', 'UTF-8');
+            if ($reparado !== false && mb_check_encoding($reparado, 'UTF-8')) {
+                return $reparado;
+            }
+        }
+        return $texto;
     }
 
     /**

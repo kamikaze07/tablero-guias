@@ -96,7 +96,17 @@ try {
 
     foreach ($data as &$row) {
         if ($row["cfdi_nuevo_folio"] === null) {
-            $dato = $refacturacionPorFila[$row["source"] . "|" . $row["num_guia"]] ?? null;
+            // Bug real corregido 2026-08-10 (ver docblock de
+            // RefacturacionSicretLookup::clave()): la clave debe incluir
+            // `fecha_liberacion` de ESTA fila — una guía liberada más de
+            // una vez tiene una fila por solicitud, y sin la fecha en la
+            // clave todas compartían (y sobreescribían) el mismo resultado
+            // en $refacturacionPorFila.
+            $dato = $refacturacionPorFila[RefacturacionSicretLookup::clave([
+                "source" => $row["source"],
+                "num_guia" => $row["num_guia"],
+                "despues_de" => $row["fecha_liberacion"],
+            ])] ?? null;
 
             if ($dato !== null) {
                 $row["cfdi_nuevo_folio"] = $dato["folio"];
